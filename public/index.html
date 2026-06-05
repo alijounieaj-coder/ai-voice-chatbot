@@ -51,7 +51,8 @@
     #app {
       display: flex;
       flex-direction: column;
-      height: 100dvh;
+      height: 100vh;                        /* fallback */
+      height: calc(var(--vh, 1vh) * 100);  /* iOS Safari fix */
       max-width: 480px;
       margin: 0 auto;
       position: relative;
@@ -207,7 +208,7 @@
 
     /* ── Transcript ───────────────────────────────────────── */
     #transcript {
-      flex: 1; overflow-y: auto;
+      flex: 1; min-height: 0; overflow-y: auto;
       padding: 10px 14px; display: flex; flex-direction: column;
       gap: 8px; scroll-behavior: smooth;
     }
@@ -288,6 +289,15 @@
   </style>
 </head>
 <body>
+<script>
+  // iOS Safari viewport height fix — must run before layout
+  function setVH() {
+    document.documentElement.style.setProperty('--vh', window.innerHeight * 0.01 + 'px');
+  }
+  setVH();
+  window.addEventListener('resize', setVH);
+  window.addEventListener('orientationchange', () => setTimeout(setVH, 200));
+</script>
 <div id="app">
 
   <!-- Header -->
@@ -848,13 +858,14 @@ function playTTS(text, lang) {
 /* ── Mic button ─────────────────────────────────────────────── */
 let speechUnlocked = false;
 function unlockSpeech() {
-  // Mobile requires speechSynthesis triggered inside a user gesture
+  // Mobile requires speechSynthesis triggered synchronously inside a user gesture
   if (speechUnlocked || !window.speechSynthesis) return;
-  const utt = new SpeechSynthesisUtterance('');
-  utt.volume = 0;
-  speechSynthesis.speak(utt);
-  speechSynthesis.cancel();
   speechUnlocked = true;
+  const utt = new SpeechSynthesisUtterance('.');
+  utt.volume = 0.01;
+  utt.rate   = 10;   // speak fast so it ends instantly
+  speechSynthesis.speak(utt);
+  // Do NOT cancel — let it finish; canceling immediately can break the unlock
 }
 
 micBtn.addEventListener('click', async () => {
