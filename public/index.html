@@ -30,11 +30,12 @@
     }
 
     html, body {
-      height: 100%;
+      height: 100%; width: 100%;
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
       background: var(--bg-deep);
       color: var(--text);
       overflow: hidden;
+      margin: 0; padding: 0;
     }
 
     /* Ambient gradient */
@@ -49,13 +50,13 @@
 
     /* ── App shell ───────────────────────────────────────── */
     #app {
+      position: fixed;         /* most reliable mobile full-screen approach */
+      top: 0; left: 0; right: 0; bottom: 0;
       display: flex;
       flex-direction: column;
-      height: 100vh;                        /* fallback */
-      height: calc(var(--vh, 1vh) * 100);  /* iOS Safari fix */
       max-width: 480px;
       margin: 0 auto;
-      position: relative;
+      overflow: hidden;
       z-index: 1;
     }
 
