@@ -233,7 +233,16 @@
     @keyframes fadeUp { from{opacity:0;transform:translateY(6px)} to{opacity:1;transform:translateY(0)} }
 
     /* ── Transcript min-height guard ─────────────────────── */
-    #transcript { min-height: 60px; }
+    #transcript { min-height: 80px; }
+
+    /* ── Compact avatar on short screens ─────────────────── */
+    @media (max-height: 700px) {
+      #avatar-ring    { width: 90px; height: 124px; border-radius: 10px; }
+      #avatar-canvas  { width: 90px; height: 124px; border-radius: 10px; }
+      #photo-overlay  { border-radius: 10px; }
+      .a-ring         { border-radius: 13px; }
+      #avatar-section { padding: 2px 0 4px; gap: 4px; }
+    }
 
     /* ── Controls ─────────────────────────────────────────── */
     #controls {
@@ -837,7 +846,19 @@ function playTTS(text, lang) {
 }
 
 /* ── Mic button ─────────────────────────────────────────────── */
+let speechUnlocked = false;
+function unlockSpeech() {
+  // Mobile requires speechSynthesis triggered inside a user gesture
+  if (speechUnlocked || !window.speechSynthesis) return;
+  const utt = new SpeechSynthesisUtterance('');
+  utt.volume = 0;
+  speechSynthesis.speak(utt);
+  speechSynthesis.cancel();
+  speechUnlocked = true;
+}
+
 micBtn.addEventListener('click', async () => {
+  unlockSpeech(); // MUST run before any await — stays in user gesture
   if (!audioCtx) {
     const ok = await initAudio();
     if (!ok) return;
