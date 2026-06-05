@@ -1,16 +1,14 @@
 {
   "name": "ai-voice-chatbot",
   "version": "1.0.0",
-  "description": "Mobile-friendly AI voice chatbot with Arabic/English support, Gemini 1.5 Flash + ElevenLabs",
+  "description": "Mobile-friendly AI voice chatbot with Arabic/English support, Groq + Fish Audio",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "vercel dev",
     "deploy": "vercel --prod"
   },
-  "dependencies": {
-    "@google/generative-ai": "^0.15.0"
-  },
+  "dependencies": {},
   "devDependencies": {
     "vercel": "^34.0.0"
   },

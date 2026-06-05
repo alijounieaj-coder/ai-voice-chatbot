@@ -1,10 +1,8 @@
-// api/chat.js  —  Gemini 1.5 Flash streaming endpoint
-// Receives conversation history + detected language
-// Streams SSE back to the frontend (same format as before)
+// api/chat.js  —  Groq (Llama 3.3 70B) streaming endpoint
+// Free tier: 14,400 requests/day, excellent Arabic + English support
+// Uses OpenAI-compatible API — no extra SDK needed
 
-import { GoogleGenerativeAI } from '@google/generative-ai';
-
-const genAI = new GoogleGenerativeAI(process.env.GOOGLE_API_KEY);
+const GROQ_API_URL = 'https://api.groq.com/openai/v1/chat/completions';
 
 const SYSTEM_PROMPT = `You are a friendly, conversational AI assistant.
 Rules:
@@ -25,6 +23,11 @@ export default async function handler(req, res) {
     return res.status(400).json({ error: 'Invalid messages array' });
   }
 
+  const apiKey = process.env.GROQ_API_KEY;
+  if (!apiKey) {
+    return res.status(500).json({ error: 'GROQ_API_KEY not set in environment' });
+  }
+
   // Validate and sanitize messages
   const safeMessages = messages
     .filter(m => m && ['user', 'assistant'].includes(m.role) && typeof m.content === 'string' && m.content.trim())
@@ -34,28 +37,6 @@ export default async function handler(req, res) {
     return res.status(400).json({ error: 'No valid messages' });
   }
 
-  // Gemini requires role = 'user' | 'model' (not 'assistant')
-  // History = all messages except the last user message
-  // Last user message is sent separately via sendMessageStream
-  const lastMsg = safeMessages[safeMessages.length - 1];
-  if (lastMsg.role !== 'user') {
-    return res.status(400).json({ error: 'Last message must be from user' });
-  }
-
-  // Build Gemini chat history (all except last message)
-  // Gemini requires strict alternation: user → model → user → model
-  // We enforce this by filtering out consecutive same-role messages
-  const rawHistory = safeMessages.slice(0, -1);
-  const geminiHistory = [];
-  let lastRole = null;
-
-  for (const msg of rawHistory) {
-    const role = msg.role === 'assistant' ? 'model' : 'user';
-    if (role === lastRole) continue; // skip duplicates to maintain alternation
-    geminiHistory.push({ role, parts: [{ text: msg.content }] });
-    lastRole = role;
-  }
-
   // Set SSE headers
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
@@ -63,35 +44,47 @@ export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
 
   try {
-    const model = genAI.getGenerativeModel({
-      model: 'gemini-2.0-flash',
-      systemInstruction: SYSTEM_PROMPT,
-      generationConfig: {
-        maxOutputTokens: 250,
+    const groqRes = await fetch(GROQ_API_URL, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        model:       'llama-3.3-70b-versatile',
+        stream:      true,
+        max_tokens:  250,
         temperature: 0.75,
-        topP: 0.9
-      }
+        messages: [
+          { role: 'system', content: SYSTEM_PROMPT },
+          ...safeMessages
+        ]
+      })
     });
 
-    const chat = model.startChat({ history: geminiHistory });
-    const result = await chat.sendMessageStream(lastMsg.content);
-
-    // Stream chunks as SSE — same format the frontend already parses
-    for await (const chunk of result.stream) {
-      const text = chunk.text();
-      if (text) {
-        const data = JSON.stringify({
-          choices: [{ delta: { content: text } }]
-        });
-        res.write(`data: ${data}\n\n`);
+    if (!groqRes.ok) {
+      const errText = await groqRes.text();
+      console.error('[chat] Groq error:', groqRes.status, errText);
+      if (!res.headersSent) {
+        return res.status(502).json({ error: 'AI service error', detail: errText.slice(0, 200) });
       }
+      return res.end();
     }
 
-    res.write('data: [DONE]\n\n');
+    // Pipe Groq SSE stream directly to client — same format as OpenAI
+    const reader = groqRes.body.getReader();
+    const dec    = new TextDecoder();
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      res.write(dec.decode(value, { stream: true }));
+    }
+
     res.end();
 
   } catch (err) {
-    console.error('[chat] Gemini error:', err.message);
+    console.error('[chat] Groq fetch error:', err.message);
     if (!res.headersSent) {
       res.status(500).json({ error: 'AI service error', detail: err.message });
     } else {
