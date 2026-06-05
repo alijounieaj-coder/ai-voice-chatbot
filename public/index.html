@@ -1,0 +1,847 @@
+<!DOCTYPE html>
+<html lang="en" dir="auto">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+  <meta name="theme-color" content="#0a0a14" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <title>AI Voice Assistant</title>
+  <style>
+    /* ── Reset ───────────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg-deep:     #0a0a14;
+      --bg-card:     rgba(255,255,255,0.05);
+      --border:      rgba(255,255,255,0.09);
+      --primary:     #6c63ff;
+      --primary-glow:#6c63ff44;
+      --green:       #00e676;
+      --green-glow:  #00e67650;
+      --amber:       #ffa726;
+      --amber-glow:  #ffa72650;
+      --blue:        #29b6f6;
+      --blue-glow:   #29b6f650;
+      --text:        #e8e8f0;
+      --text-dim:    #7777aa;
+      --radius:      16px;
+      --tr:          0.25s ease;
+    }
+
+    html, body {
+      height: 100%;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: var(--bg-deep);
+      color: var(--text);
+      overflow: hidden;
+    }
+
+    /* Ambient gradient */
+    body::before {
+      content: '';
+      position: fixed; inset: 0;
+      background:
+        radial-gradient(ellipse at 20% 0%,   rgba(108,99,255,0.10) 0%, transparent 55%),
+        radial-gradient(ellipse at 80% 100%,  rgba(0,230,118,0.05)  0%, transparent 55%);
+      pointer-events: none; z-index: 0;
+    }
+
+    /* ── App shell ───────────────────────────────────────── */
+    #app {
+      display: flex;
+      flex-direction: column;
+      height: 100dvh;
+      max-width: 480px;
+      margin: 0 auto;
+      position: relative;
+      z-index: 1;
+    }
+
+    /* ── Header ─────────────────────────────────────────── */
+    #header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 14px 18px 10px;
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+      background: rgba(10,10,20,0.85);
+      backdrop-filter: blur(14px);
+      -webkit-backdrop-filter: blur(14px);
+      z-index: 10;
+    }
+    #header h1 { font-size: 16px; font-weight: 600; }
+
+    #lang-badge {
+      font-size: 11px; font-weight: 600; letter-spacing: 0.06em;
+      padding: 3px 10px; border-radius: 20px;
+      background: var(--bg-card); border: 1px solid var(--border);
+      color: var(--text-dim); transition: var(--tr); text-transform: uppercase;
+    }
+    #lang-badge.ar { color: var(--amber); border-color: var(--amber-glow); }
+    #lang-badge.en { color: var(--blue);  border-color: var(--blue-glow);  }
+
+    /* ── Status pill ─────────────────────────────────────── */
+    #status-bar { display:flex; justify-content:center; padding: 8px 0; flex-shrink:0; }
+    #status-pill {
+      display:flex; align-items:center; gap:7px;
+      padding: 5px 14px; border-radius:20px;
+      border: 1px solid var(--border); background: var(--bg-card);
+      font-size: 12px; font-weight:500; color: var(--text-dim);
+      transition: var(--tr);
+    }
+    #status-dot {
+      width:7px; height:7px; border-radius:50%;
+      background: var(--text-dim); transition: background var(--tr); flex-shrink:0;
+    }
+    #status-pill.listening { color:var(--green); border-color:var(--green-glow); }
+    #status-pill.listening #status-dot { background:var(--green); animation:blink 1s infinite; }
+    #status-pill.thinking  { color:var(--blue);  border-color:var(--blue-glow);  }
+    #status-pill.thinking  #status-dot { background:var(--blue);  animation:spin 1.2s linear infinite; }
+    #status-pill.speaking  { color:var(--amber); border-color:var(--amber-glow); }
+    #status-pill.speaking  #status-dot { background:var(--amber); animation:blink 0.6s infinite; }
+    @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.15} }
+    @keyframes spin  { to{transform:rotate(360deg)} }
+
+    /* ── Avatar section ──────────────────────────────────── */
+    #avatar-section {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 6px 0 10px;
+      flex-shrink: 0;
+      gap: 10px;
+    }
+
+    /* Ring wrapper — CSS animations live here */
+    #avatar-ring {
+      position: relative;
+      width: 160px; height: 160px;
+      border-radius: 50%;
+      transition: var(--tr);
+    }
+
+    /* Outer pulse rings (absolutely positioned) */
+    .a-ring {
+      position: absolute; border-radius: 50%;
+      border: 2px solid transparent;
+      opacity: 0; pointer-events: none;
+      transition: border-color 0.3s, opacity 0.3s;
+    }
+    .a-ring-1 { inset: -10px; }
+    .a-ring-2 { inset: -22px; }
+    .a-ring-3 { inset: -36px; }
+
+    /* Listening — green rings */
+    #avatar-ring.listening .a-ring { border-color: var(--green); opacity: 0.5; animation: av-pulse 1.6s ease-out infinite; }
+    #avatar-ring.listening .a-ring-1 { animation-delay: 0s; }
+    #avatar-ring.listening .a-ring-2 { animation-delay: 0.3s; }
+    #avatar-ring.listening .a-ring-3 { animation-delay: 0.6s; }
+
+    /* Thinking — rotating blue ring */
+    #avatar-ring.thinking .a-ring-1 {
+      border-color: var(--blue); opacity: 0.7;
+      border-top-color: transparent; border-right-color: transparent;
+      animation: av-spin 1.2s linear infinite;
+    }
+
+    /* Speaking — amber glow, ring pulses fast */
+    #avatar-ring.speaking .a-ring-1 { border-color: var(--amber); opacity: 0.6; animation: av-pulse 0.5s ease-out infinite; }
+    #avatar-ring.speaking .a-ring-2 { border-color: var(--amber); opacity: 0.3; animation: av-pulse 0.5s ease-out 0.15s infinite; }
+
+    @keyframes av-pulse {
+      0%   { transform: scale(0.95); opacity: 0.55; }
+      100% { transform: scale(1.08); opacity: 0; }
+    }
+    @keyframes av-spin { to { transform: rotate(360deg); } }
+
+    /* Canvas itself */
+    #avatar-canvas {
+      display: block;
+      width: 160px; height: 160px;
+      border-radius: 50%;
+      border: 2px solid var(--border);
+      transition: border-color var(--tr), box-shadow var(--tr);
+      background: var(--bg-card);
+      cursor: pointer;
+    }
+    #avatar-ring.listening #avatar-canvas { border-color: var(--green); box-shadow: 0 0 18px var(--green-glow); }
+    #avatar-ring.thinking  #avatar-canvas { border-color: var(--blue);  box-shadow: 0 0 18px var(--blue-glow);  }
+    #avatar-ring.speaking  #avatar-canvas { border-color: var(--amber); box-shadow: 0 0 22px var(--amber-glow); }
+
+    /* Photo upload overlay — shown only when no photo */
+    #photo-overlay {
+      position: absolute; inset: 0;
+      border-radius: 50%;
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      gap: 6px; cursor: pointer;
+      background: var(--bg-card);
+      transition: background var(--tr);
+    }
+    #photo-overlay:hover, #photo-overlay:active { background: rgba(108,99,255,0.12); }
+    #photo-overlay .icon { font-size: 28px; }
+    #photo-overlay .label { font-size: 11px; color: var(--text-dim); font-weight: 500; }
+    #photo-overlay.hidden { display: none; }
+
+    /* Change photo button — shown after upload */
+    #change-photo-btn {
+      position: absolute; bottom: 4px; right: 4px;
+      width: 30px; height: 30px; border-radius: 50%;
+      border: 1.5px solid var(--border);
+      background: rgba(10,10,20,0.9);
+      color: var(--text-dim); font-size: 14px;
+      cursor: pointer; display: none;
+      align-items: center; justify-content: center;
+      -webkit-tap-highlight-color: transparent;
+    }
+    #change-photo-btn.visible { display: flex; }
+
+    /* ── Error banner ─────────────────────────────────────── */
+    #error-banner {
+      background: #d32f2f22; border: 1px solid #d32f2f55;
+      color: #ef9a9a; font-size: 13px; padding: 9px 16px;
+      margin: 0 16px 6px; border-radius: 10px; display: none; flex-shrink: 0;
+    }
+
+    /* ── Transcript ───────────────────────────────────────── */
+    #transcript {
+      flex: 1; overflow-y: auto;
+      padding: 10px 14px; display: flex; flex-direction: column;
+      gap: 8px; scroll-behavior: smooth;
+    }
+    #transcript::-webkit-scrollbar { width: 3px; }
+    #transcript::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+    .msg { display:flex; flex-direction:column; max-width:82%; animation:fadeUp 0.2s ease; }
+    .msg.user  { align-self:flex-end;   align-items:flex-end;   }
+    .msg.ai    { align-self:flex-start; align-items:flex-start; }
+    .msg-label { font-size:10px; font-weight:600; letter-spacing:0.06em; text-transform:uppercase; color:var(--text-dim); margin-bottom:3px; padding:0 4px; }
+    .bubble { padding:9px 13px; border-radius:18px; font-size:14px; line-height:1.5; word-break:break-word; }
+    .msg.user .bubble { background:var(--primary); color:#fff; border-bottom-right-radius:4px; }
+    .msg.ai   .bubble { background:var(--bg-card); border:1px solid var(--border); color:var(--text); border-bottom-left-radius:4px; }
+    .bubble[dir="rtl"] { text-align:right; font-size:15px; }
+
+    #interim-msg {
+      align-self:flex-end; max-width:82%;
+      padding:7px 13px; border-radius:18px 18px 4px 18px;
+      background:rgba(108,99,255,0.12); border:1px dashed rgba(108,99,255,0.35);
+      color:rgba(255,255,255,0.45); font-size:13px; font-style:italic; display:none;
+    }
+
+    @keyframes fadeUp { from{opacity:0;transform:translateY(6px)} to{opacity:1;transform:translateY(0)} }
+
+    /* ── Controls ─────────────────────────────────────────── */
+    #controls {
+      display:flex; flex-direction:column; align-items:center;
+      gap:12px; padding:12px 24px 28px; flex-shrink:0;
+      border-top:1px solid var(--border);
+      background:rgba(10,10,20,0.7); backdrop-filter:blur(14px); -webkit-backdrop-filter:blur(14px);
+    }
+
+    #mic-wrapper { position:relative; display:flex; align-items:center; justify-content:center; }
+
+    .ring { position:absolute; border-radius:50%; border:2px solid var(--green); opacity:0; transition:opacity 0.2s; }
+    .ring-1 { width:82px;  height:82px; }
+    .ring-2 { width:100px; height:100px; }
+    .ring-3 { width:118px; height:118px; }
+    #mic-wrapper.listening .ring { opacity:0.4; animation:pulse-ring 1.5s ease-out infinite; }
+    #mic-wrapper.listening .ring-1 { animation-delay:0s; }
+    #mic-wrapper.listening .ring-2 { animation-delay:0.3s; }
+    #mic-wrapper.listening .ring-3 { animation-delay:0.6s; }
+    @keyframes pulse-ring { 0%{transform:scale(0.85);opacity:0.45} 100%{transform:scale(1.15);opacity:0} }
+
+    #mic-btn {
+      width:64px; height:64px; border-radius:50%; border:none; cursor:pointer;
+      display:flex; align-items:center; justify-content:center;
+      font-size:26px; position:relative; z-index:1;
+      background:var(--bg-card); border:2px solid var(--border); color:var(--text-dim);
+      transition:background var(--tr), border-color var(--tr), transform 0.12s;
+      -webkit-tap-highlight-color:transparent; user-select:none;
+    }
+    #mic-btn:active { transform:scale(0.9); }
+    #mic-btn.listening { background:rgba(0,230,118,0.12); border-color:var(--green); color:var(--green); }
+
+    #hint { font-size:11px; color:var(--text-dim); text-align:center; }
+
+    /* ── Clear button ─────────────────────────────────────── */
+    #clear-btn {
+      position:absolute; top:14px; right:18px;
+      background:none; border:1px solid var(--border); color:var(--text-dim);
+      font-size:11px; padding:3px 10px; border-radius:20px; cursor:pointer;
+      -webkit-tap-highlight-color:transparent;
+    }
+    #clear-btn:active { opacity:0.6; }
+  </style>
+</head>
+<body>
+<div id="app">
+
+  <!-- Header -->
+  <div id="header">
+    <h1>🎙️ AI Assistant</h1>
+    <span id="lang-badge">—</span>
+  </div>
+
+  <!-- Status -->
+  <div id="status-bar">
+    <div id="status-pill">
+      <span id="status-dot"></span>
+      <span id="status-text">Ready</span>
+    </div>
+  </div>
+
+  <!-- Avatar -->
+  <div id="avatar-section">
+    <div id="avatar-ring">
+      <div class="a-ring a-ring-1"></div>
+      <div class="a-ring a-ring-2"></div>
+      <div class="a-ring a-ring-3"></div>
+
+      <canvas id="avatar-canvas" width="320" height="320"></canvas>
+
+      <!-- Upload overlay (visible until photo chosen) -->
+      <div id="photo-overlay">
+        <span class="icon">📷</span>
+        <span class="label">Tap to set photo</span>
+      </div>
+
+      <!-- Change photo after upload -->
+      <button id="change-photo-btn" aria-label="Change photo">✎</button>
+    </div>
+
+    <!-- Hidden file input -->
+    <input type="file" id="photo-input" accept="image/*" style="display:none" />
+  </div>
+
+  <!-- Error -->
+  <div id="error-banner"></div>
+
+  <!-- Transcript -->
+  <div id="transcript">
+    <div id="interim-msg"></div>
+  </div>
+
+  <!-- Controls -->
+  <div id="controls">
+    <div id="mic-wrapper">
+      <div class="ring ring-1"></div>
+      <div class="ring ring-2"></div>
+      <div class="ring ring-3"></div>
+      <button id="mic-btn" aria-label="Tap to talk">🎤</button>
+    </div>
+    <div id="hint">Tap to talk · interrupt anytime</div>
+  </div>
+
+  <button id="clear-btn">Clear</button>
+
+</div>
+
+<script>
+// ══════════════════════════════════════════════════════════════
+//  AI Voice Chatbot — v2  (Gemini + ElevenLabs + Avatar)
+// ══════════════════════════════════════════════════════════════
+
+/* ── State ─────────────────────────────────────────────────── */
+let recognition        = null;
+let audioCtx           = null;
+let analyser           = null;
+let micStream          = null;
+let currentAudio       = null;
+let chatController     = null;
+let ttsController      = null;
+let isAISpeaking       = false;
+let isListening        = false;
+let history            = [];
+let detectedLang       = 'en';
+
+// Avatar
+let avatarImg          = null;   // HTMLImageElement
+let avatarAnimRAF      = null;
+
+/* ── localStorage persistence ──────────────────────────────── */
+const STORAGE_KEY = 'ai_chat_history';
+
+function saveHistory() {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(history));
+  } catch {}
+}
+
+function loadHistory() {
+  try {
+    const saved = localStorage.getItem(STORAGE_KEY);
+    if (!saved) return;
+    const parsed = JSON.parse(saved);
+    if (!Array.isArray(parsed) || parsed.length === 0) return;
+    history = parsed;
+    // Rebuild transcript UI from saved history
+    parsed.forEach(m => addMessage(m.role === 'user' ? 'user' : 'ai', m.content));
+    // Restore language badge from last message
+    const lastMsg = parsed[parsed.length - 1];
+    if (lastMsg) setLang(detectLang(lastMsg.content));
+  } catch {}
+}
+
+/* ── DOM refs ──────────────────────────────────────────────── */
+const micBtn        = document.getElementById('mic-btn');
+const micWrapper    = document.getElementById('mic-wrapper');
+const statusPill    = document.getElementById('status-pill');
+const statusText    = document.getElementById('status-text');
+const transcriptEl  = document.getElementById('transcript');
+const interimMsg    = document.getElementById('interim-msg');
+const langBadge     = document.getElementById('lang-badge');
+const errorBanner   = document.getElementById('error-banner');
+const clearBtn      = document.getElementById('clear-btn');
+const avatarRing    = document.getElementById('avatar-ring');
+const avatarCanvas  = document.getElementById('avatar-canvas');
+const photoOverlay  = document.getElementById('photo-overlay');
+const changeBtn     = document.getElementById('change-photo-btn');
+const photoInput    = document.getElementById('photo-input');
+const avatarCtx     = avatarCanvas.getContext('2d');
+
+/* ── Status ────────────────────────────────────────────────── */
+function setStatus(state) {
+  const labels = { idle:'Ready', listening:'Listening…', thinking:'Thinking…', speaking:'Speaking…' };
+  statusPill.className = state;
+  statusText.textContent = labels[state] || state;
+  // Mirror state to avatar ring
+  avatarRing.className = state === 'idle' ? '' : state;
+}
+
+/* ── Language ──────────────────────────────────────────────── */
+function detectLang(text) { return /[؀-ۿݐ-ݿ]/.test(text) ? 'ar' : 'en'; }
+function setLang(lang) {
+  detectedLang = lang;
+  langBadge.textContent = lang === 'ar' ? 'عربي' : 'EN';
+  langBadge.className = lang;
+  if (recognition) recognition.lang = lang === 'ar' ? 'ar-SA' : 'en-US';
+}
+
+/* ── Error ─────────────────────────────────────────────────── */
+function showError(msg) {
+  errorBanner.textContent = msg;
+  errorBanner.style.display = 'block';
+  setTimeout(() => { errorBanner.style.display = 'none'; }, 5000);
+}
+
+/* ── Transcript ────────────────────────────────────────────── */
+function addMessage(role, text) {
+  const lang = detectLang(text);
+  const wrap = document.createElement('div');
+  wrap.className = `msg ${role}`;
+  const label = document.createElement('div');
+  label.className = 'msg-label';
+  label.textContent = role === 'user' ? 'You' : 'AI';
+  const bubble = document.createElement('div');
+  bubble.className = 'bubble';
+  bubble.textContent = text;
+  if (lang === 'ar') { bubble.dir = 'rtl'; bubble.setAttribute('lang', 'ar'); }
+  wrap.appendChild(label);
+  wrap.appendChild(bubble);
+  transcriptEl.insertBefore(wrap, interimMsg);
+  transcriptEl.scrollTop = transcriptEl.scrollHeight;
+}
+
+function setInterim(text) {
+  interimMsg.textContent = text;
+  interimMsg.style.display = text ? 'block' : 'none';
+  transcriptEl.scrollTop = transcriptEl.scrollHeight;
+}
+
+/* ══════════════════════════════════════════════════════════
+   AVATAR  —  Canvas rendering + mouth animation
+   ══════════════════════════════════════════════════════════ */
+
+const AVATAR_W = 320;
+const AVATAR_H = 320;
+const MOUTH_START = 0.60;   // top of mouth region (60% down the face)
+const MAX_MOUTH_OPEN = 0.10; // max vertical expansion (10% of height)
+
+function drawAvatarFrame(amplitude) {
+  avatarCtx.clearRect(0, 0, AVATAR_W, AVATAR_H);
+
+  // Clip to circle
+  avatarCtx.save();
+  avatarCtx.beginPath();
+  avatarCtx.arc(AVATAR_W / 2, AVATAR_H / 2, AVATAR_W / 2, 0, Math.PI * 2);
+  avatarCtx.clip();
+
+  if (!avatarImg) {
+    // No photo yet — draw placeholder
+    avatarCtx.fillStyle = 'rgba(108,99,255,0.08)';
+    avatarCtx.fillRect(0, 0, AVATAR_W, AVATAR_H);
+    avatarCtx.restore();
+    return;
+  }
+
+  const iW = avatarImg.naturalWidth;
+  const iH = avatarImg.naturalHeight;
+
+  if (!isAISpeaking || amplitude < 0.02) {
+    // Idle / listening / thinking — draw full photo normally
+    avatarCtx.drawImage(avatarImg, 0, 0, iW, iH, 0, 0, AVATAR_W, AVATAR_H);
+  } else {
+    // Speaking — animate mouth region
+    const expansion = Math.min(amplitude, 1) * MAX_MOUTH_OPEN;
+
+    // 1. Draw top portion (above mouth) — unchanged
+    const topSrcH  = iH * MOUTH_START;
+    const topDestH = AVATAR_H * MOUTH_START;
+    avatarCtx.drawImage(
+      avatarImg,
+      0, 0, iW, topSrcH,
+      0, 0, AVATAR_W, topDestH
+    );
+
+    // 2. Draw mouth region — expanded vertically by amplitude
+    const mouthSrcY  = iH * MOUTH_START;
+    const mouthSrcH  = iH * (1 - MOUTH_START);
+    const mouthDestY = AVATAR_H * MOUTH_START;
+    const mouthDestH = AVATAR_H * (1 - MOUTH_START) * (1 + expansion);
+    avatarCtx.drawImage(
+      avatarImg,
+      0, mouthSrcY, iW, mouthSrcH,
+      0, mouthDestY, AVATAR_W, mouthDestH
+    );
+  }
+
+  avatarCtx.restore();
+}
+
+// Animation loop — runs whenever we have mic audio context
+const ampArr = new Uint8Array(128);
+function avatarLoop() {
+  let amp = 0;
+  if (analyser && isAISpeaking) {
+    analyser.getByteFrequencyData(ampArr);
+    // Focus on speech frequencies (roughly bins 4–30 of 128 @ 44.1kHz)
+    let sum = 0;
+    for (let i = 4; i < 32; i++) sum += ampArr[i];
+    amp = (sum / (28 * 255));  // 0–1 normalised
+  }
+  drawAvatarFrame(amp);
+  avatarAnimRAF = requestAnimationFrame(avatarLoop);
+}
+
+/* ── Photo upload ───────────────────────────────────────────── */
+function loadPhoto(file) {
+  const url = URL.createObjectURL(file);
+  const img = new Image();
+  img.onload = () => {
+    avatarImg = img;
+    photoOverlay.classList.add('hidden');
+    changeBtn.classList.add('visible');
+    // Immediately draw
+    drawAvatarFrame(0);
+  };
+  img.onerror = () => showError('Could not load image. Try a different file.');
+  img.src = url;
+}
+
+photoOverlay.addEventListener('click', () => photoInput.click());
+avatarCanvas.addEventListener('click', () => { if (!avatarImg) photoInput.click(); });
+changeBtn.addEventListener('click', () => photoInput.click());
+photoInput.addEventListener('change', (e) => {
+  const file = e.target.files[0];
+  if (file) loadPhoto(file);
+  photoInput.value = ''; // reset so same file can be re-selected
+});
+
+// Initial placeholder draw
+drawAvatarFrame(0);
+
+/* ══════════════════════════════════════════════════════════
+   WEB AUDIO — Mic capture + VAD
+   ══════════════════════════════════════════════════════════ */
+
+const VAD_THRESHOLD  = 22;   // 0–255 average energy to trigger interrupt
+const VAD_COOLDOWN   = 700;  // ms after AI starts speaking before interrupt enabled
+let   vadCooldownUntil = 0;
+
+async function initAudio() {
+  try {
+    micStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+    audioCtx  = new (window.AudioContext || window.webkitAudioContext)();
+    const src = audioCtx.createMediaStreamSource(micStream);
+    analyser  = audioCtx.createAnalyser();
+    analyser.fftSize = 256;
+    analyser.smoothingTimeConstant = 0.65;
+    src.connect(analyser);
+
+    startVAD();
+    if (!avatarAnimRAF) avatarLoop(); // start avatar animation
+    return true;
+  } catch (err) {
+    showError('Microphone access denied. Please allow microphone and reload.');
+    return false;
+  }
+}
+
+const vadArr = new Uint8Array(128);
+function startVAD() {
+  function tick() {
+    analyser.getByteFrequencyData(vadArr);
+    const avg = vadArr.reduce((a, b) => a + b, 0) / vadArr.length;
+
+    // Interrupt: user speaks while AI is talking
+    if (isAISpeaking && Date.now() > vadCooldownUntil && avg > VAD_THRESHOLD) {
+      interruptAI();
+      startListening();
+    }
+
+    requestAnimationFrame(tick);
+  }
+  requestAnimationFrame(tick);
+}
+
+/* ── Interrupt ─────────────────────────────────────────────── */
+function interruptAI() {
+  if (currentAudio) {
+    currentAudio.pause();
+    currentAudio.src = '';
+    currentAudio = null;
+  }
+  if (ttsController)  { ttsController.abort();  ttsController  = null; }
+  if (chatController) { chatController.abort();  chatController = null; }
+  isAISpeaking = false;
+  setStatus('idle');
+}
+
+/* ══════════════════════════════════════════════════════════
+   SPEECH RECOGNITION (STT)
+   ══════════════════════════════════════════════════════════ */
+
+function initSTT() {
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SR) {
+    showError('Speech recognition not supported. Use Chrome or Safari.');
+    return false;
+  }
+
+  recognition = new SR();
+  recognition.continuous     = false;
+  recognition.interimResults = true;
+  recognition.lang           = 'ar-SA'; // handles Arabic; also catches English
+  recognition.maxAlternatives = 1;
+
+  recognition.onresult = (e) => {
+    const last  = e.results[e.results.length - 1];
+    const text  = last[0].transcript.trim();
+    if (last.isFinal) {
+      setInterim('');
+      if (text) handleUserInput(text);
+    } else {
+      setInterim(text);
+    }
+  };
+
+  recognition.onend = () => {
+    if (isListening) {
+      isListening = false;
+      setMicState(false);
+      if (statusPill.className === 'listening') setStatus('idle');
+    }
+  };
+
+  recognition.onerror = (e) => {
+    if (['aborted', 'no-speech'].includes(e.error)) return;
+    showError(`STT error: ${e.error}`);
+    isListening = false;
+    setMicState(false);
+    setStatus('idle');
+  };
+
+  return true;
+}
+
+function setMicState(on) {
+  micBtn.classList.toggle('listening', on);
+  micWrapper.classList.toggle('listening', on);
+}
+
+function startListening() {
+  if (isListening || isAISpeaking) return;
+  if (audioCtx?.state === 'suspended') audioCtx.resume();
+  try {
+    recognition.start();
+    isListening = true;
+    setMicState(true);
+    setStatus('listening');
+  } catch {}
+}
+
+function stopListening() {
+  if (!isListening) return;
+  recognition.stop();
+  isListening = false;
+  setMicState(false);
+  setInterim('');
+}
+
+/* ══════════════════════════════════════════════════════════
+   MAIN PIPELINE — input → Gemini → ElevenLabs → audio
+   ══════════════════════════════════════════════════════════ */
+
+async function handleUserInput(text) {
+  if (!text.trim()) return;
+
+  const lang = detectLang(text);
+  setLang(lang);
+
+  addMessage('user', text);
+  history.push({ role: 'user', content: text });
+  saveHistory();
+
+  setMicState(false);
+  setStatus('thinking');
+
+  let aiText = '';
+
+  try {
+    // ── Step 1: Gemini streaming ────────────────────────────
+    chatController = new AbortController();
+    const chatRes  = await fetch('/api/chat', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ messages: history.slice(-12), lang }),
+      signal:  chatController.signal
+    });
+
+    if (!chatRes.ok) throw new Error(`Chat API ${chatRes.status}`);
+
+    // Read SSE stream
+    const reader = chatRes.body.getReader();
+    const dec    = new TextDecoder();
+    let   buf    = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      const lines = buf.split('\n');
+      buf = lines.pop();
+
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        const raw = line.slice(6).trim();
+        if (raw === '[DONE]' || raw.startsWith('[ERROR]')) continue;
+        try {
+          const parsed = JSON.parse(raw);
+          const delta  = parsed.choices?.[0]?.delta?.content || '';
+          aiText += delta;
+        } catch {}
+      }
+    }
+
+    if (!aiText) throw new Error('Empty response from AI');
+
+    history.push({ role: 'assistant', content: aiText });
+    addMessage('ai', aiText);
+    saveHistory();
+
+    // ── Step 2: TTS ─────────────────────────────────────────
+    setStatus('speaking');
+    isAISpeaking    = true;
+    vadCooldownUntil = Date.now() + VAD_COOLDOWN;
+
+    await playTTS(aiText, lang);
+
+  } catch (err) {
+    if (err.name === 'AbortError') return;
+    console.error(err);
+    showError('Something went wrong. Please try again.');
+    setStatus('idle');
+    isAISpeaking = false;
+  }
+}
+
+/* ── TTS Playback ───────────────────────────────────────────── */
+async function playTTS(text, lang) {
+  ttsController = new AbortController();
+  try {
+    const res = await fetch('/api/tts', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ text, lang }),
+      signal:  ttsController.signal
+    });
+
+    if (!res.ok) throw new Error(`TTS API ${res.status}`);
+
+    const blob   = await res.blob();
+    const url    = URL.createObjectURL(blob);
+    currentAudio = new Audio(url);
+
+    currentAudio.onended = () => {
+      isAISpeaking = false;
+      setStatus('idle');
+      URL.revokeObjectURL(url);
+      currentAudio = null;
+    };
+
+    currentAudio.onerror = () => {
+      isAISpeaking = false;
+      setStatus('idle');
+    };
+
+    await currentAudio.play();
+
+  } catch (err) {
+    if (err.name === 'AbortError') return;
+    console.error('TTS error:', err);
+    showError('Voice playback failed. Check your ElevenLabs API key.');
+    isAISpeaking = false;
+    setStatus('idle');
+  }
+}
+
+/* ── Mic button ─────────────────────────────────────────────── */
+micBtn.addEventListener('click', async () => {
+  if (!audioCtx) {
+    const ok = await initAudio();
+    if (!ok) return;
+  }
+  if (isAISpeaking) { interruptAI(); return; }
+  isListening ? stopListening() : startListening();
+});
+
+/* ── Clear ──────────────────────────────────────────────────── */
+clearBtn.addEventListener('click', () => {
+  history = [];
+  localStorage.removeItem(STORAGE_KEY);
+  transcriptEl.querySelectorAll('.msg').forEach(m => m.remove());
+  setInterim('');
+  interruptAI();
+  setStatus('idle');
+  langBadge.textContent = '—';
+  langBadge.className   = '';
+});
+
+/* ── Space bar shortcut ─────────────────────────────────────── */
+document.addEventListener('keydown', async (e) => {
+  if (e.code === 'Space' && e.target === document.body) {
+    e.preventDefault();
+    micBtn.click();
+  }
+});
+
+/* ── Wake lock (keep screen on) ─────────────────────────────── */
+async function requestWakeLock() {
+  if ('wakeLock' in navigator) {
+    try { await navigator.wakeLock.request('screen'); } catch {}
+  }
+}
+requestWakeLock();
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') requestWakeLock();
+});
+
+/* ── Init ───────────────────────────────────────────────────── */
+initSTT();
+setStatus('idle');
+loadHistory();  // restore conversation from previous session
+</script>
+</body>
+</html>
