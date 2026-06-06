@@ -284,6 +284,18 @@
 
     #hint { font-size:11px; color:var(--text-dim); text-align:center; }
 
+    /* ── Voice picker ─────────────────────────────────────── */
+    #voice-row {
+      display:flex; align-items:center; gap:8px; width:100%;
+    }
+    #voice-select {
+      flex:1; background:var(--bg-card); border:1px solid var(--border);
+      border-radius:10px; padding:6px 10px; font-size:12px;
+      color:var(--text-dim); outline:none; font-family:inherit;
+      -webkit-appearance:none; cursor:pointer;
+    }
+    #voice-label { font-size:11px; color:var(--text-dim); white-space:nowrap; }
+
     /* ── Text input row ───────────────────────────────────── */
     #text-row {
       display:flex; align-items:center; gap:8px; width:100%;
@@ -380,6 +392,10 @@
       <button id="mic-btn" aria-label="Tap to talk">🎤</button>
     </div>
     <div id="hint">Tap mic to talk · or type below</div>
+    <div id="voice-row">
+      <span id="voice-label">🔊 Voice:</span>
+      <select id="voice-select"><option>Loading voices…</option></select>
+    </div>
     <div id="text-row">
       <input id="text-input" type="text" placeholder="Type a message…" autocomplete="off" />
       <button id="send-btn" aria-label="Send">➤</button>
@@ -946,30 +962,45 @@ async function handleUserInput(text) {
   }
 }
 
+/* ── Voice picker ───────────────────────────────────────────── */
+const voiceSelect = document.getElementById('voice-select');
+let allVoices     = [];
+let selectedVoice = null; // user-chosen voice (overrides auto)
+
+function populateVoicePicker() {
+  allVoices = speechSynthesis.getVoices();
+  if (!allVoices.length) return;
+  voiceSelect.innerHTML = '<option value="">Auto (by language)</option>';
+  allVoices.forEach((v, i) => {
+    const opt = document.createElement('option');
+    opt.value = i;
+    opt.textContent = `${v.name} (${v.lang})`;
+    voiceSelect.appendChild(opt);
+  });
+  // Restore saved choice
+  const saved = localStorage.getItem('selected_voice');
+  if (saved) {
+    voiceSelect.value = saved;
+    selectedVoice = allVoices[parseInt(saved)] || null;
+  }
+}
+
+voiceSelect.addEventListener('change', () => {
+  const idx = voiceSelect.value;
+  selectedVoice = idx !== '' ? allVoices[parseInt(idx)] : null;
+  localStorage.setItem('selected_voice', idx);
+});
+
+speechSynthesis.onvoiceschanged = populateVoicePicker;
+populateVoicePicker();
+
 /* ── TTS Playback — Browser Web Speech API (free, unlimited) ── */
 function pickVoice(lang) {
-  const voices = speechSynthesis.getVoices();
+  if (selectedVoice) return selectedVoice; // user chose manually
+  const voices = allVoices.length ? allVoices : speechSynthesis.getVoices();
   const t      = lang === 'ar' ? 'ar' : 'en';
   const all    = voices.filter(v => v.lang.startsWith(t));
-  if (!all.length) return null;
-
-  // Known female voice names to avoid
-  const femaleNames = ['samantha','karen','victoria','moira','fiona','tessa',
-    'veena','zariyah','zira','susan','lisa','kate','alice','allison',
-    'ava','emily','joanna','salli','kimberly','kendra','ivy','female'];
-
-  // Known male voice names to prefer
-  const maleNames = ['maged','naayf','zariyah','hamed','david','mark',
-    'daniel','alex','thomas','aaron','guy','christopher','ryan','james',
-    'male','fred','tom','martin','lee','rishi','mohan'];
-
-  const isFemale = v => femaleNames.some(n => v.name.toLowerCase().includes(n));
-  const isMale   = v => maleNames.some(n => v.name.toLowerCase().includes(n));
-
-  return all.find(v => isMale(v))
-      || all.find(v => !isFemale(v) && v.localService)
-      || all.find(v => !isFemale(v))
-      || all[0];
+  return all.find(v => v.localService) || all[0] || null;
 }
 
 function playTTS(text, lang) {
