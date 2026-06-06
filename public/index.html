@@ -872,7 +872,7 @@ function stopListening() {
 }
 
 /* ══════════════════════════════════════════════════════════
-   MAIN PIPELINE — input → Gemini → ElevenLabs → audio
+   MAIN PIPELINE — input → Groq → ElevenLabs → audio
    ══════════════════════════════════════════════════════════ */
 
 async function handleUserInput(text) {
@@ -932,12 +932,13 @@ async function handleUserInput(text) {
     addMessage('ai', aiText);
     saveHistory();
 
-    // ── Step 2: TTS ─────────────────────────────────────────
+    // ── Step 2: TTS — detect language from AI's response, not user's input
+    const aiLang = detectLang(aiText);
     setStatus('speaking');
     isAISpeaking    = true;
     vadCooldownUntil = Date.now() + VAD_COOLDOWN;
 
-    await playTTS(aiText, lang);
+    await playTTS(aiText, aiLang);
 
   } catch (err) {
     if (err.name === 'AbortError') return;
