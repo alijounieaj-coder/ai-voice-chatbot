@@ -1002,8 +1002,9 @@ async function playTTS(text, lang) {
   } catch (err) {
     if (err.name === 'AbortError') return;
     console.error('[TTS]', err.message);
-    // Graceful fallback to browser TTS
-    await playTTSFallback(text, lang);
+    showError('Voice error: ' + err.message.slice(0, 80));
+    isAISpeaking = false;
+    setStatus('idle');
   } finally {
     ttsController = null; ttsAnalyser = null;
   }
