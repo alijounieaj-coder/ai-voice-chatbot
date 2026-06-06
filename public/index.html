@@ -568,58 +568,76 @@ function drawAvatarFrame(amplitude) {
   const iW = avatarImg.naturalWidth;
   const iH = avatarImg.naturalHeight;
 
-  // Always draw the full photo — never cut or split it
+  // Always draw the full photo
   avatarCtx.drawImage(avatarImg, 0, 0, iW, iH, 0, 0, AVATAR_W, AVATAR_H);
 
-  // When speaking: overlay a skin-toned gradient mouth shape
-  if (isAISpeaking && amplitude > 0.03) {
-    const cx    = AVATAR_W * (faceMouth ? (faceMouth.leftX + faceMouth.rightX) / 2     : 0.50);
-    const cy    = AVATAR_H * (faceMouth ? faceMouth.centerY                            : 0.63);
-    const rx    = AVATAR_W * (faceMouth ? (faceMouth.rightX - faceMouth.leftX) * 0.36  : 0.09);
-    const openH = AVATAR_H * (faceMouth ? (faceMouth.bottomY - faceMouth.topY) * 1.0   : 0.042);
-    const ry    = Math.max(1, openH * Math.min(amplitude, 1));
+  // When speaking: shift ONLY the bottom lip pixels down — natural mouth opening
+  if (isAISpeaking && amplitude > 0.02) {
+    // Mouth region (normalized) — from face detection or heuristic
+    const mLX  = faceMouth ? faceMouth.leftX   : 0.33;
+    const mRX  = faceMouth ? faceMouth.rightX  : 0.67;
+    const mMidY = faceMouth ? faceMouth.centerY : 0.635;
+    const mBotY = faceMouth ? faceMouth.bottomY : 0.665;
 
-    // Radial gradient: dark center → blends into skin tone at edges (no harsh border)
-    const grad = avatarCtx.createRadialGradient(cx, cy, 0, cx, cy, Math.max(rx, ry) * 1.1);
-    if (mouthSkinColor) {
-      const { r, g, b } = mouthSkinColor;
-      grad.addColorStop(0,    `rgba(${(r*0.12)|0}, ${(g*0.08)|0}, ${(b*0.08)|0}, 0.96)`);
-      grad.addColorStop(0.55, `rgba(${(r*0.30)|0}, ${(g*0.20)|0}, ${(b*0.20)|0}, 0.75)`);
-      grad.addColorStop(1,    `rgba(${r}, ${g}, ${b}, 0)`);
-    } else {
-      grad.addColorStop(0,    'rgba(18, 5, 5, 0.93)');
-      grad.addColorStop(0.6,  'rgba(40, 15, 15, 0.5)');
-      grad.addColorStop(1,    'rgba(60, 25, 25, 0)');
-    }
+    // Max opening = mouth height × 80%
+    const maxOpen = AVATAR_H * (mBotY - mMidY) * 0.8;
+    const openPx  = Math.round(Math.max(1, maxOpen * Math.min(amplitude, 1)));
+
+    const cx = AVATAR_W * (mLX + mRX) / 2;
+    const cy = AVATAR_H * mMidY;
+    const rx = AVATAR_W * (mRX - mLX) / 2;
+
+    // 1. Redraw bottom lip pixels from photo, shifted down by openPx
+    const srcX = mLX  * iW  - iW  * 0.01;
+    const srcY = mMidY * iH;
+    const srcW = (mRX - mLX) * iW + iW * 0.02;
+    const srcH = (mBotY - mMidY) * iH + iH * 0.025;
+    const dstX = cx - rx - AVATAR_W * 0.01;
+    const dstW = rx * 2   + AVATAR_W * 0.02;
+    const dstH = srcH * AVATAR_H / iH;
 
     avatarCtx.save();
-    avatarCtx.scale(1, ry / rx); // squash circle into ellipse
+    // Clip to ellipse so the shifted lip blends naturally
     avatarCtx.beginPath();
-    avatarCtx.arc(cx, cy * (rx / ry), rx, 0, Math.PI * 2);
-    avatarCtx.fillStyle = grad;
-    avatarCtx.fill();
+    avatarCtx.ellipse(cx, cy + openPx + dstH / 2, rx + 3, dstH / 2 + openPx / 2 + 2, 0, 0, Math.PI * 2);
+    avatarCtx.clip();
+    avatarCtx.drawImage(avatarImg, srcX, srcY, srcW, srcH, dstX, cy + openPx, dstW, dstH);
     avatarCtx.restore();
+
+    // 2. Fill the tiny gap (mouth opening) with a dark interior color
+    if (openPx >= 2) {
+      avatarCtx.save();
+      avatarCtx.beginPath();
+      avatarCtx.ellipse(cx, cy + openPx / 2, rx * 0.72, openPx / 2, 0, 0, Math.PI * 2);
+      avatarCtx.clip();
+      const g = avatarCtx.createLinearGradient(cx, cy, cx, cy + openPx);
+      if (mouthSkinColor) {
+        const { r, g: gv, b } = mouthSkinColor;
+        g.addColorStop(0,   `rgba(${r*0.15|0},${gv*0.08|0},${b*0.08|0},0.95)`);
+        g.addColorStop(1,   `rgba(${r*0.08|0},${gv*0.04|0},${b*0.04|0},0.98)`);
+      } else {
+        g.addColorStop(0, 'rgba(35,10,10,0.92)');
+        g.addColorStop(1, 'rgba(15,4,4,0.97)');
+      }
+      avatarCtx.fillStyle = g;
+      avatarCtx.fillRect(cx - rx, cy, rx * 2, openPx + 1);
+      avatarCtx.restore();
+    }
   }
 
   avatarCtx.restore();
 }
 
 // Animation loop
-const ampArr  = new Uint8Array(128);
-let ttsPhase  = 0;
+const ampArr = new Uint8Array(128);
+let ttsPhase = 0;
 function avatarLoop() {
   let amp = 0;
-  if (isAISpeaking && ttsAnalyser) {
-    // Real amplitude from ElevenLabs audio
-    ttsAnalyser.getByteFrequencyData(ampArr);
-    let sum = 0;
-    for (let i = 1; i < 20; i++) sum += ampArr[i];
-    amp = Math.min(1, (sum / (19 * 255)) * 4);
-  } else if (isAISpeaking) {
-    // Simulated fallback when no analyser
-    ttsPhase += 0.07;
-    amp = 0.35 + 0.35 * Math.sin(ttsPhase) + 0.12 * Math.sin(ttsPhase * 2.5 + 1);
-    amp = Math.max(0.02, Math.min(1, amp));
+  if (isAISpeaking) {
+    // Simulate natural mouth movement with overlapping sine waves
+    ttsPhase += 0.08;
+    amp = 0.4 + 0.38 * Math.sin(ttsPhase) + 0.15 * Math.sin(ttsPhase * 2.3 + 1);
+    amp = Math.max(0.05, Math.min(1, amp));
   } else if (analyser) {
     analyser.getByteFrequencyData(ampArr);
     let sum = 0;
