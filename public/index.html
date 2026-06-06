@@ -817,8 +817,9 @@ function startVAD() {
 
 /* ── Interrupt ─────────────────────────────────────────────── */
 function interruptAI() {
-  if (window.speechSynthesis) speechSynthesis.cancel();
-  if (chatController) { chatController.abort(); chatController = null; }
+  if (ttsController)  { ttsController.abort();  ttsController  = null; }
+  if (chatController) { chatController.abort();  chatController = null; }
+  if (currentAudio)   { currentAudio.pause(); currentAudio.src = ''; currentAudio = null; }
   isAISpeaking = false;
   setStatus('idle');
 }
@@ -977,6 +978,46 @@ async function handleUserInput(text) {
     showError('Something went wrong. Please try again.');
     setStatus('idle');
     isAISpeaking = false;
+  }
+}
+
+/* ── TTS — Gemini 2.0 (free, high quality, Arabic + English) ── */
+let currentAudio  = null;
+let ttsController = null;
+
+async function playTTS(text, lang) {
+  ttsController = new AbortController();
+  try {
+    const res = await fetch('/api/tts', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ text, lang }),
+      signal:  ttsController.signal
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || err.detail || `TTS ${res.status}`);
+    }
+    const blob = await res.blob();
+    const url  = URL.createObjectURL(blob);
+    await new Promise((resolve) => {
+      currentAudio = new Audio(url);
+      const cleanup = () => {
+        URL.revokeObjectURL(url);
+        currentAudio = null;
+        isAISpeaking = false; setStatus('idle'); resolve();
+      };
+      currentAudio.onended = cleanup;
+      currentAudio.onerror = cleanup;
+      currentAudio.play().catch(cleanup);
+    });
+  } catch (err) {
+    if (err.name === 'AbortError') return;
+    console.error('[TTS]', err.message);
+    showError('Voice error: ' + err.message.slice(0, 80));
+    isAISpeaking = false; setStatus('idle');
+  } finally {
+    ttsController = null;
   }
 }
 
