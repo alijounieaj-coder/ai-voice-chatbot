@@ -708,11 +708,13 @@ function initSTT() {
   };
 
   recognition.onerror = (e) => {
-    if (['aborted', 'no-speech'].includes(e.error)) return;
-    showError(`STT error: ${e.error}`);
     isListening = false;
     setMicState(false);
     setStatus('idle');
+    if (e.error === 'aborted') return;
+    if (e.error === 'no-speech') { showError('No speech detected — try again'); return; }
+    if (e.error === 'not-allowed') { showError('Microphone permission denied — allow it in browser settings'); return; }
+    showError(`Mic error: ${e.error}`);
   };
 
   return true;
@@ -731,7 +733,13 @@ function startListening() {
     isListening = true;
     setMicState(true);
     setStatus('listening');
-  } catch {}
+  } catch (err) {
+    console.error('STT start error:', err);
+    showError('Mic error: ' + (err.message || err));
+    isListening = false;
+    setMicState(false);
+    setStatus('idle');
+  }
 }
 
 function stopListening() {
@@ -905,12 +913,15 @@ function unlockSpeech() {
 
 micBtn.addEventListener('click', async () => {
   unlockSpeech(); // MUST run before any await — stays in user gesture
-  if (!audioCtx) {
-    const ok = await initAudio();
-    if (!ok) return;
-  }
   if (isAISpeaking) { interruptAI(); return; }
-  isListening ? stopListening() : startListening();
+
+  // Start STT immediately (doesn't need audioCtx)
+  if (isListening) { stopListening(); return; }
+
+  // Init audio analyser in background — don't block STT on failure
+  if (!audioCtx) initAudio().catch(() => {});
+
+  startListening();
 });
 
 /* ── Clear ──────────────────────────────────────────────────── */
