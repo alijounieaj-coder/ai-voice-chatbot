@@ -280,6 +280,26 @@
 
     #hint { font-size:11px; color:var(--text-dim); text-align:center; }
 
+    /* ── Text input row ───────────────────────────────────── */
+    #text-row {
+      display:flex; align-items:center; gap:8px; width:100%;
+    }
+    #text-input {
+      flex:1; background:var(--bg-card); border:1px solid var(--border);
+      border-radius:22px; padding:10px 16px; font-size:15px;
+      color:var(--text); outline:none; font-family:inherit;
+      -webkit-appearance:none;
+    }
+    #text-input::placeholder { color:var(--text-dim); }
+    #text-input:focus { border-color:var(--primary); }
+    #send-btn {
+      width:40px; height:40px; border-radius:50%; border:none; cursor:pointer;
+      background:var(--primary); color:#fff; font-size:18px; flex-shrink:0;
+      display:flex; align-items:center; justify-content:center;
+      -webkit-tap-highlight-color:transparent;
+    }
+    #send-btn:active { opacity:0.75; transform:scale(0.92); }
+
     /* ── Clear button ─────────────────────────────────────── */
     #clear-btn {
       position:absolute; top:14px; right:18px;
@@ -355,7 +375,11 @@
       <div class="ring ring-3"></div>
       <button id="mic-btn" aria-label="Tap to talk">🎤</button>
     </div>
-    <div id="hint">Tap to talk · interrupt anytime</div>
+    <div id="hint">Tap mic to talk · or type below</div>
+    <div id="text-row">
+      <input id="text-input" type="text" placeholder="Type a message…" autocomplete="off" />
+      <button id="send-btn" aria-label="Send">➤</button>
+    </div>
   </div>
 
   <button id="clear-btn">Clear</button>
@@ -422,14 +446,20 @@ const photoOverlay  = document.getElementById('photo-overlay');
 const changeBtn     = document.getElementById('change-photo-btn');
 const photoInput    = document.getElementById('photo-input');
 const avatarCtx     = avatarCanvas.getContext('2d');
+const textInput     = document.getElementById('text-input');
+const sendBtn       = document.getElementById('send-btn');
 
 /* ── Status ────────────────────────────────────────────────── */
 function setStatus(state) {
   const labels = { idle:'Ready', listening:'Listening…', thinking:'Thinking…', speaking:'Speaking…' };
   statusPill.className = state;
   statusText.textContent = labels[state] || state;
-  // Mirror state to avatar ring
   avatarRing.className = state === 'idle' ? '' : state;
+  // Disable text input while busy
+  const busy = state !== 'idle';
+  textInput.disabled = busy;
+  sendBtn.disabled   = busy;
+  sendBtn.style.opacity = busy ? '0.4' : '1';
 }
 
 /* ── Language ──────────────────────────────────────────────── */
@@ -893,6 +923,19 @@ clearBtn.addEventListener('click', () => {
   setStatus('idle');
   langBadge.textContent = '—';
   langBadge.className   = '';
+});
+
+/* ── Text input send ────────────────────────────────────────── */
+function sendText() {
+  const text = textInput.value.trim();
+  if (!text || isAISpeaking) return;
+  textInput.value = '';
+  unlockSpeech();
+  handleUserInput(text);
+}
+sendBtn.addEventListener('click', sendText);
+textInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendText(); }
 });
 
 /* ── Space bar shortcut ─────────────────────────────────────── */
