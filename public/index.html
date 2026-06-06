@@ -683,9 +683,9 @@ function initSTT() {
   }
 
   recognition = new SR();
-  recognition.continuous     = false;
-  recognition.interimResults = true;
-  recognition.lang           = 'ar-SA'; // handles Arabic; also catches English
+  recognition.continuous      = false;
+  recognition.interimResults  = true;
+  recognition.lang            = 'en-US'; // start English; switches to ar-SA after Arabic detected
   recognition.maxAlternatives = 1;
 
   recognition.onresult = (e) => {
@@ -911,16 +911,10 @@ function unlockSpeech() {
   // Do NOT cancel — let it finish; canceling immediately can break the unlock
 }
 
-micBtn.addEventListener('click', async () => {
-  unlockSpeech(); // MUST run before any await — stays in user gesture
+micBtn.addEventListener('click', () => {
+  unlockSpeech();
   if (isAISpeaking) { interruptAI(); return; }
-
-  // Start STT immediately (doesn't need audioCtx)
   if (isListening) { stopListening(); return; }
-
-  // Init audio analyser in background — don't block STT on failure
-  if (!audioCtx) initAudio().catch(() => {});
-
   startListening();
 });
 
