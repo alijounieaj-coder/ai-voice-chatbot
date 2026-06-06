@@ -7,6 +7,8 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <title>AI Voice Assistant</title>
+  <!-- face-api.js for mouth landmark detection -->
+  <script src="https://cdn.jsdelivr.net/npm/face-api.js@0.22.2/dist/face-api.min.js"></script>
   <style>
     /* ── Reset ───────────────────────────────────────────── */
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -394,9 +396,12 @@
 /* ── State ─────────────────────────────────────────────────── */
 let recognition        = null;
 let audioCtx           = null;
-let analyser           = null;
+let analyser           = null;       // mic analyser (VAD)
+let ttsAnalyser        = null;       // TTS audio analyser (lip sync)
 let micStream          = null;
+let currentAudio       = null;       // Fish Audio <audio> element
 let chatController     = null;
+let ttsController      = null;
 let isAISpeaking       = false;
 let isListening        = false;
 let history            = [];
@@ -405,6 +410,7 @@ let detectedLang       = 'en';
 // Avatar
 let avatarImg          = null;   // HTMLImageElement
 let avatarAnimRAF      = null;
+let faceMouth          = null;   // detected mouth region { topY, bottomY, leftX, rightX } normalized 0–1
 
 /* ── localStorage persistence ──────────────────────────────── */
 const STORAGE_KEY = 'ai_chat_history';
@@ -508,16 +514,14 @@ function setInterim(text) {
 
 const AVATAR_W = 280;
 const AVATAR_H = 380;
-const MOUTH_START = 0.58;    // top of mouth region (58% down — portrait framing)
-const MAX_MOUTH_OPEN = 0.10; // max vertical expansion (10% of height)
 
 function drawAvatarFrame(amplitude) {
   avatarCtx.clearRect(0, 0, AVATAR_W, AVATAR_H);
 
-  // Clip to rounded rectangle (portrait shape)
+  // Clip to rounded rectangle
   avatarCtx.save();
   avatarCtx.beginPath();
-  const r = 28; // matches 14px CSS border-radius × 2 (HiDPI)
+  const r = 28;
   avatarCtx.moveTo(r, 0);
   avatarCtx.lineTo(AVATAR_W - r, 0);
   avatarCtx.quadraticCurveTo(AVATAR_W, 0, AVATAR_W, r);
@@ -531,7 +535,6 @@ function drawAvatarFrame(amplitude) {
   avatarCtx.clip();
 
   if (!avatarImg) {
-    // No photo yet — draw placeholder
     avatarCtx.fillStyle = 'rgba(108,99,255,0.08)';
     avatarCtx.fillRect(0, 0, AVATAR_W, AVATAR_H);
     avatarCtx.restore();
@@ -541,47 +544,57 @@ function drawAvatarFrame(amplitude) {
   const iW = avatarImg.naturalWidth;
   const iH = avatarImg.naturalHeight;
 
+  // Use detected mouth landmarks or fall back to 60% heuristic
+  const splitY  = faceMouth ? faceMouth.centerY  : 0.60;
+  const mouthW  = faceMouth ? (faceMouth.rightX - faceMouth.leftX) : 0.30;
+  const mouthLX = faceMouth ? faceMouth.leftX    : 0.35;
+  const openMax = faceMouth ? (faceMouth.bottomY - faceMouth.topY) * 0.9 : 0.06;
+
   if (!isAISpeaking || amplitude < 0.02) {
-    // Idle / listening / thinking — draw full photo normally
     avatarCtx.drawImage(avatarImg, 0, 0, iW, iH, 0, 0, AVATAR_W, AVATAR_H);
   } else {
-    // Speaking — animate mouth region
-    const expansion = Math.min(amplitude, 1) * MAX_MOUTH_OPEN;
+    const gap = Math.min(amplitude, 1) * openMax; // normalized gap to open
 
-    // 1. Draw top portion (above mouth) — unchanged
-    const topSrcH  = iH * MOUTH_START;
-    const topDestH = AVATAR_H * MOUTH_START;
+    // 1. Top — above mouth centre, unchanged
     avatarCtx.drawImage(
-      avatarImg,
-      0, 0, iW, topSrcH,
-      0, 0, AVATAR_W, topDestH
+      avatarImg, 0, 0, iW, iH * splitY,
+      0, 0, AVATAR_W, AVATAR_H * splitY
     );
 
-    // 2. Draw mouth region — expanded vertically by amplitude
-    const mouthSrcY  = iH * MOUTH_START;
-    const mouthSrcH  = iH * (1 - MOUTH_START);
-    const mouthDestY = AVATAR_H * MOUTH_START;
-    const mouthDestH = AVATAR_H * (1 - MOUTH_START) * (1 + expansion);
+    // 2. Bottom — below mouth centre, shifted down by gap
+    const botSrcY  = iH  * splitY;
+    const botDestY = AVATAR_H * splitY + gap * AVATAR_H;
     avatarCtx.drawImage(
-      avatarImg,
-      0, mouthSrcY, iW, mouthSrcH,
-      0, mouthDestY, AVATAR_W, mouthDestH
+      avatarImg, 0, botSrcY, iW, iH - botSrcY,
+      0, botDestY, AVATAR_W, AVATAR_H - botDestY
     );
+
+    // 3. Dark gap between lips — mouth opening
+    avatarCtx.fillStyle = '#100808';
+    avatarCtx.beginPath();
+    avatarCtx.ellipse(
+      AVATAR_W * (mouthLX + mouthW / 2),  // cx
+      AVATAR_H * splitY + (gap * AVATAR_H) / 2,  // cy
+      AVATAR_W * mouthW / 2,  // rx
+      (gap * AVATAR_H) / 2,   // ry
+      0, 0, Math.PI * 2
+    );
+    avatarCtx.fill();
   }
 
   avatarCtx.restore();
 }
 
-// Animation loop — runs whenever we have mic audio context
+// Animation loop
 const ampArr = new Uint8Array(128);
-let ttsPhase  = 0;
 function avatarLoop() {
   let amp = 0;
-  if (isAISpeaking) {
-    // Simulate natural mouth movement with overlapping sine waves
-    ttsPhase += 0.07;
-    amp = 0.35 + 0.35 * Math.sin(ttsPhase) + 0.12 * Math.sin(ttsPhase * 2.5 + 1);
-    amp = Math.max(0.02, Math.min(1, amp));
+  if (isAISpeaking && ttsAnalyser) {
+    // Real amplitude from Fish Audio playback
+    ttsAnalyser.getByteFrequencyData(ampArr);
+    let sum = 0;
+    for (let i = 1; i < 16; i++) sum += ampArr[i]; // speech frequencies
+    amp = Math.min(1, (sum / (15 * 255)) * 3);      // boosted
   } else if (analyser) {
     analyser.getByteFrequencyData(ampArr);
     let sum = 0;
@@ -592,20 +605,72 @@ function avatarLoop() {
   avatarAnimRAF = requestAnimationFrame(avatarLoop);
 }
 
+/* ── Face detection ─────────────────────────────────────────── */
+const MODEL_URL = 'https://cdn.jsdelivr.net/gh/justadudewhohacks/face-api.js@master/weights';
+let faceModelsLoaded = false;
+
+async function loadFaceModels() {
+  if (faceModelsLoaded) return;
+  try {
+    await Promise.all([
+      faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL),
+      faceapi.nets.faceLandmark68TinyNet.loadFromUri(MODEL_URL)
+    ]);
+    faceModelsLoaded = true;
+  } catch (e) {
+    console.warn('Face model load failed, using heuristic mouth position', e);
+  }
+}
+
+async function detectMouth(img) {
+  if (!faceModelsLoaded) return null;
+  try {
+    const det = await faceapi
+      .detectSingleFace(img, new faceapi.TinyFaceDetectorOptions())
+      .withFaceLandmarks(true); // true = use tiny net
+    if (!det) return null;
+    const pts = det.landmarks.positions;
+    const iW  = img.naturalWidth;
+    const iH  = img.naturalHeight;
+    // Outer lips: 48-59, inner: 60-67
+    const mouthPts = pts.slice(48, 68);
+    const xs = mouthPts.map(p => p.x / iW);
+    const ys = mouthPts.map(p => p.y / iH);
+    return {
+      leftX:   Math.min(...xs),
+      rightX:  Math.max(...xs),
+      topY:    Math.min(...ys),
+      bottomY: Math.max(...ys),
+      centerY: (Math.min(...ys) + Math.max(...ys)) / 2
+    };
+  } catch (e) {
+    console.warn('Face detect error:', e);
+    return null;
+  }
+}
+
 /* ── Photo upload ───────────────────────────────────────────── */
 function loadPhoto(file) {
   const url = URL.createObjectURL(file);
   const img = new Image();
-  img.onload = () => {
+  img.onload = async () => {
     avatarImg = img;
     photoOverlay.classList.add('hidden');
     changeBtn.classList.add('visible');
-    // Immediately draw
     drawAvatarFrame(0);
+
+    // Detect mouth in background
+    await loadFaceModels();
+    faceMouth = await detectMouth(img);
+    if (faceMouth) console.log('Mouth detected:', faceMouth);
+    else           console.log('No face found — using heuristic split');
   };
   img.onerror = () => showError('Could not load image. Try a different file.');
   img.src = url;
 }
+
+// Pre-load face models as soon as page is ready
+loadFaceModels();
 
 photoOverlay.addEventListener('click', () => photoInput.click());
 avatarCanvas.addEventListener('click', () => { if (!avatarImg) photoInput.click(); });
@@ -665,8 +730,10 @@ function startVAD() {
 
 /* ── Interrupt ─────────────────────────────────────────────── */
 function interruptAI() {
-  if (window.speechSynthesis) speechSynthesis.cancel();
-  if (chatController) { chatController.abort(); chatController = null; }
+  if (ttsController)  { ttsController.abort();  ttsController  = null; }
+  if (chatController) { chatController.abort();  chatController = null; }
+  if (currentAudio)   { currentAudio.pause(); currentAudio.src = ''; currentAudio = null; }
+  ttsAnalyser  = null;
   isAISpeaking = false;
   setStatus('idle');
 }
@@ -827,75 +894,81 @@ async function handleUserInput(text) {
   }
 }
 
-/* ── TTS Playback — Browser Web Speech API (free, unlimited) ── */
-function playTTS(text, lang) {
-  return new Promise((resolve) => {
-    if (!window.speechSynthesis) {
-      console.warn('speechSynthesis not available');
-      isAISpeaking = false;
-      setStatus('idle');
-      resolve();
-      return;
+/* ── TTS Playback — Fish Audio (your cloned voice) ─────────── */
+async function playTTS(text, lang) {
+  ttsController = new AbortController();
+  ttsAnalyser   = null;
+
+  try {
+    const res = await fetch('/api/tts', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ text, lang }),
+      signal:  ttsController.signal
+    });
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(`TTS ${res.status}: ${err.detail || err.error || ''}`);
     }
 
-    speechSynthesis.cancel();
-    ttsPhase = 0;
+    // Collect entire audio blob then play (most reliable on mobile)
+    const blob = await res.blob();
+    const url  = URL.createObjectURL(blob);
 
-    const utt  = new SpeechSynthesisUtterance(text);
-    utt.lang   = lang === 'ar' ? 'ar-SA' : 'en-US';
-    utt.rate   = 0.92;
-    utt.pitch  = 1.0;
-    utt.volume = 1.0;
+    await new Promise((resolve) => {
+      currentAudio = new Audio(url);
+      currentAudio.crossOrigin = 'anonymous';
 
-    function pickVoice(voiceList) {
-      const target = lang === 'ar' ? 'ar' : 'en';
-      return voiceList.find(v => v.lang.startsWith(target) && v.localService)
-          || voiceList.find(v => v.lang.startsWith(target))
-          || null;
-    }
-
-    const voices = speechSynthesis.getVoices();
-    if (voices.length) {
-      const v = pickVoice(voices);
-      if (v) utt.voice = v;
-    } else {
-      // iOS/Safari loads voices async — wait for them once
-      speechSynthesis.onvoiceschanged = () => {
-        speechSynthesis.onvoiceschanged = null;
-        const v = pickVoice(speechSynthesis.getVoices());
-        if (v) utt.voice = v;
-      };
-    }
-
-    function done() {
-      clearTimeout(ttsTimer);
-      clearInterval(iosKeepAlive);
-      isAISpeaking = false;
-      setStatus('idle');
-      resolve();
-    }
-
-    utt.onend   = done;
-    utt.onerror = (e) => {
-      if (e.error === 'interrupted' || e.error === 'canceled') { done(); return; }
-      console.error('TTS error:', e.error);
-      done();
-    };
-
-    speechSynthesis.speak(utt);
-
-    // iOS Safari bug: onend sometimes never fires → safety timeout (30s)
-    const ttsTimer = setTimeout(done, 30000);
-
-    // iOS Safari bug: speech cuts off after ~15s → keep-alive via pause/resume
-    const iosKeepAlive = setInterval(() => {
-      if (!isAISpeaking) { clearInterval(iosKeepAlive); return; }
-      if (speechSynthesis.speaking && !speechSynthesis.paused) {
-        speechSynthesis.pause();
-        speechSynthesis.resume();
+      // Connect to Web Audio for real-time lip sync amplitude
+      if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      if (audioCtx.state === 'suspended') audioCtx.resume();
+      try {
+        const src   = audioCtx.createMediaElementSource(currentAudio);
+        ttsAnalyser = audioCtx.createAnalyser();
+        ttsAnalyser.fftSize = 256;
+        src.connect(ttsAnalyser);
+        src.connect(audioCtx.destination);
+      } catch (_) {
+        // If already connected, just play normally
       }
-    }, 12000);
-  });
+
+      currentAudio.onended = () => {
+        URL.revokeObjectURL(url);
+        currentAudio = null;
+        ttsAnalyser  = null;
+        isAISpeaking = false;
+        setStatus('idle');
+        resolve();
+      };
+
+      currentAudio.onerror = () => {
+        URL.revokeObjectURL(url);
+        currentAudio = null;
+        ttsAnalyser  = null;
+        isAISpeaking = false;
+        setStatus('idle');
+        resolve();
+      };
+
+      currentAudio.play().catch((e) => {
+        console.error('Audio play failed:', e);
+        isAISpeaking = false;
+        setStatus('idle');
+        resolve();
+      });
+    });
+
+  } catch (err) {
+    if (err.name === 'AbortError') return;
+    console.error('[TTS Fish Audio]', err.message);
+    showError('Voice error — check Fish Audio API key in Vercel settings');
+    isAISpeaking = false;
+    setStatus('idle');
+  } finally {
+    ttsController = null;
+    ttsAnalyser   = null;
+  }
 }
 
 /* ── Mic button ─────────────────────────────────────────────── */
@@ -965,7 +1038,8 @@ document.addEventListener('visibilitychange', () => {
 /* ── Init ───────────────────────────────────────────────────── */
 initSTT();
 setStatus('idle');
-loadHistory();  // restore conversation from previous session
+loadHistory();
+avatarLoop(); // start avatar animation immediately
 </script>
 </body>
 </html>
