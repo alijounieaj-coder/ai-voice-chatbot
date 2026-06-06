@@ -396,12 +396,9 @@
 /* ── State ─────────────────────────────────────────────────── */
 let recognition        = null;
 let audioCtx           = null;
-let analyser           = null;       // mic analyser (VAD)
-let ttsAnalyser        = null;       // TTS audio analyser (lip sync)
+let analyser           = null;
 let micStream          = null;
-let currentAudio       = null;       // Fish Audio <audio> element
 let chatController     = null;
-let ttsController      = null;
 let isAISpeaking       = false;
 let isListening        = false;
 let history            = [];
@@ -587,14 +584,14 @@ function drawAvatarFrame(amplitude) {
 
 // Animation loop
 const ampArr = new Uint8Array(128);
+let ttsPhase  = 0;
 function avatarLoop() {
   let amp = 0;
-  if (isAISpeaking && ttsAnalyser) {
-    // Real amplitude from Fish Audio playback
-    ttsAnalyser.getByteFrequencyData(ampArr);
-    let sum = 0;
-    for (let i = 1; i < 16; i++) sum += ampArr[i]; // speech frequencies
-    amp = Math.min(1, (sum / (15 * 255)) * 3);      // boosted
+  if (isAISpeaking) {
+    // Simulate mouth movement with natural-feeling sine waves
+    ttsPhase += 0.07;
+    amp = 0.35 + 0.35 * Math.sin(ttsPhase) + 0.12 * Math.sin(ttsPhase * 2.5 + 1);
+    amp = Math.max(0.02, Math.min(1, amp));
   } else if (analyser) {
     analyser.getByteFrequencyData(ampArr);
     let sum = 0;
@@ -649,28 +646,56 @@ async function detectMouth(img) {
   }
 }
 
-/* ── Photo upload ───────────────────────────────────────────── */
+/* ── Photo upload + localStorage persistence ────────────────── */
+const PHOTO_KEY = 'ai_avatar_photo';
+
+function savePhotoToStorage(img) {
+  try {
+    // Compress to JPEG, max 600px wide, to stay within localStorage limits
+    const maxW  = 600;
+    const scale = Math.min(1, maxW / img.naturalWidth);
+    const w = Math.round(img.naturalWidth  * scale);
+    const h = Math.round(img.naturalHeight * scale);
+    const c = document.createElement('canvas');
+    c.width = w; c.height = h;
+    c.getContext('2d').drawImage(img, 0, 0, w, h);
+    localStorage.setItem(PHOTO_KEY, c.toDataURL('image/jpeg', 0.75));
+  } catch (e) { console.warn('Could not save photo to storage:', e); }
+}
+
+async function applyPhoto(img) {
+  avatarImg = img;
+  photoOverlay.classList.add('hidden');
+  changeBtn.classList.add('visible');
+  drawAvatarFrame(0);
+  await loadFaceModels();
+  faceMouth = await detectMouth(img);
+}
+
 function loadPhoto(file) {
   const url = URL.createObjectURL(file);
   const img = new Image();
-  img.onload = async () => {
-    avatarImg = img;
-    photoOverlay.classList.add('hidden');
-    changeBtn.classList.add('visible');
-    drawAvatarFrame(0);
-
-    // Detect mouth in background
-    await loadFaceModels();
-    faceMouth = await detectMouth(img);
-    if (faceMouth) console.log('Mouth detected:', faceMouth);
-    else           console.log('No face found — using heuristic split');
+  img.onload = () => {
+    savePhotoToStorage(img);
+    applyPhoto(img);
   };
   img.onerror = () => showError('Could not load image. Try a different file.');
   img.src = url;
 }
 
-// Pre-load face models as soon as page is ready
+function loadSavedPhoto() {
+  try {
+    const data = localStorage.getItem(PHOTO_KEY);
+    if (!data) return;
+    const img = new Image();
+    img.onload = () => applyPhoto(img);
+    img.src = data;
+  } catch (e) {}
+}
+
+// Pre-load face models + restore saved photo on startup
 loadFaceModels();
+loadSavedPhoto();
 
 photoOverlay.addEventListener('click', () => photoInput.click());
 avatarCanvas.addEventListener('click', () => { if (!avatarImg) photoInput.click(); });
@@ -730,10 +755,8 @@ function startVAD() {
 
 /* ── Interrupt ─────────────────────────────────────────────── */
 function interruptAI() {
-  if (ttsController)  { ttsController.abort();  ttsController  = null; }
-  if (chatController) { chatController.abort();  chatController = null; }
-  if (currentAudio)   { currentAudio.pause(); currentAudio.src = ''; currentAudio = null; }
-  ttsAnalyser  = null;
+  if (window.speechSynthesis) speechSynthesis.cancel();
+  if (chatController) { chatController.abort(); chatController = null; }
   isAISpeaking = false;
   setStatus('idle');
 }
@@ -894,81 +917,57 @@ async function handleUserInput(text) {
   }
 }
 
-/* ── TTS Playback — Fish Audio (your cloned voice) ─────────── */
-async function playTTS(text, lang) {
-  ttsController = new AbortController();
-  ttsAnalyser   = null;
+/* ── TTS Playback — Browser Web Speech API (free, unlimited) ── */
+function playTTS(text, lang) {
+  return new Promise((resolve) => {
+    if (!window.speechSynthesis) {
+      isAISpeaking = false; setStatus('idle'); resolve(); return;
+    }
+    speechSynthesis.cancel();
 
-  try {
-    const res = await fetch('/api/tts', {
-      method:  'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({ text, lang }),
-      signal:  ttsController.signal
-    });
+    const utt  = new SpeechSynthesisUtterance(text);
+    utt.lang   = lang === 'ar' ? 'ar-SA' : 'en-US';
+    utt.rate   = 0.92;
+    utt.pitch  = 1.0;
+    utt.volume = 1.0;
 
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      throw new Error(`TTS ${res.status}: ${err.detail || err.error || ''}`);
+    function pickVoice(list) {
+      const t = lang === 'ar' ? 'ar' : 'en';
+      return list.find(v => v.lang.startsWith(t) && v.localService)
+          || list.find(v => v.lang.startsWith(t)) || null;
+    }
+    const voices = speechSynthesis.getVoices();
+    if (voices.length) { const v = pickVoice(voices); if (v) utt.voice = v; }
+    else {
+      speechSynthesis.onvoiceschanged = () => {
+        speechSynthesis.onvoiceschanged = null;
+        const v = pickVoice(speechSynthesis.getVoices());
+        if (v) utt.voice = v;
+      };
     }
 
-    // Collect entire audio blob then play (most reliable on mobile)
-    const blob = await res.blob();
-    const url  = URL.createObjectURL(blob);
+    function done() {
+      clearTimeout(safetyTimer);
+      clearInterval(iosKeepAlive);
+      isAISpeaking = false; setStatus('idle'); resolve();
+    }
+    utt.onend   = done;
+    utt.onerror = (e) => {
+      if (e.error === 'interrupted' || e.error === 'canceled') { done(); return; }
+      console.error('TTS:', e.error); done();
+    };
 
-    await new Promise((resolve) => {
-      currentAudio = new Audio(url);
-      currentAudio.crossOrigin = 'anonymous';
-
-      // Connect to Web Audio for real-time lip sync amplitude
-      if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-      if (audioCtx.state === 'suspended') audioCtx.resume();
-      try {
-        const src   = audioCtx.createMediaElementSource(currentAudio);
-        ttsAnalyser = audioCtx.createAnalyser();
-        ttsAnalyser.fftSize = 256;
-        src.connect(ttsAnalyser);
-        src.connect(audioCtx.destination);
-      } catch (_) {
-        // If already connected, just play normally
+    speechSynthesis.speak(utt);
+    // iOS: onend sometimes never fires
+    const safetyTimer  = setTimeout(done, 30000);
+    // iOS: cuts off after ~15s
+    const iosKeepAlive = setInterval(() => {
+      if (!isAISpeaking) { clearInterval(iosKeepAlive); return; }
+      if (speechSynthesis.speaking && !speechSynthesis.paused) {
+        speechSynthesis.pause(); speechSynthesis.resume();
       }
-
-      currentAudio.onended = () => {
-        URL.revokeObjectURL(url);
-        currentAudio = null;
-        ttsAnalyser  = null;
-        isAISpeaking = false;
-        setStatus('idle');
-        resolve();
-      };
-
-      currentAudio.onerror = () => {
-        URL.revokeObjectURL(url);
-        currentAudio = null;
-        ttsAnalyser  = null;
-        isAISpeaking = false;
-        setStatus('idle');
-        resolve();
-      };
-
-      currentAudio.play().catch((e) => {
-        console.error('Audio play failed:', e);
-        isAISpeaking = false;
-        setStatus('idle');
-        resolve();
-      });
-    });
-
-  } catch (err) {
-    if (err.name === 'AbortError') return;
-    console.error('[TTS Fish Audio]', err.message);
-    showError('Voice error — check Fish Audio API key in Vercel settings');
-    isAISpeaking = false;
-    setStatus('idle');
-  } finally {
-    ttsController = null;
-    ttsAnalyser   = null;
-  }
+    }, 12000);
+  });
 }
 
 /* ── Mic button ─────────────────────────────────────────────── */
