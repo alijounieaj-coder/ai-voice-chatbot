@@ -947,51 +947,70 @@ async function handleUserInput(text) {
 }
 
 /* ── TTS Playback — Browser Web Speech API (free, unlimited) ── */
+function pickVoice(lang) {
+  const voices = speechSynthesis.getVoices();
+  const t      = lang === 'ar' ? 'ar' : 'en';
+  const all    = voices.filter(v => v.lang.startsWith(t));
+
+  // Prefer known male voice names
+  const maleKeywords = ['male','Male','david','David','mark','Mark',
+    'daniel','Daniel','alex','Alex','thomas','Thomas','aaron','Aaron',
+    'guy','Guy','christopher','Christopher','ryan','Ryan','james','James',
+    'maged','Maged','hamed','Hamed','naayf','Naayf'];
+
+  const male = all.find(v => maleKeywords.some(k => v.name.includes(k)));
+  return male || all.find(v => v.localService) || all[0] || null;
+}
+
 function playTTS(text, lang) {
   return new Promise((resolve) => {
     if (!window.speechSynthesis) { isAISpeaking = false; setStatus('idle'); resolve(); return; }
-    speechSynthesis.cancel();
-    ttsPhase = 0;
 
-    const utt  = new SpeechSynthesisUtterance(text);
-    utt.lang   = lang === 'ar' ? 'ar-SA' : 'en-US';
-    utt.rate   = 0.92;
-    utt.pitch  = 1.0;
-    utt.volume = 1.0;
+    // Small delay so any pending unlock utterance finishes first
+    setTimeout(() => {
+      speechSynthesis.cancel();
+      ttsPhase = 0;
 
-    function pickVoice(list) {
-      const t = lang === 'ar' ? 'ar' : 'en';
-      return list.find(v => v.lang.startsWith(t) && v.localService)
-          || list.find(v => v.lang.startsWith(t)) || null;
-    }
-    const voices = speechSynthesis.getVoices();
-    if (voices.length) { const v = pickVoice(voices); if (v) utt.voice = v; }
-    else {
-      speechSynthesis.onvoiceschanged = () => {
-        speechSynthesis.onvoiceschanged = null;
-        const v = pickVoice(speechSynthesis.getVoices());
+      const utt  = new SpeechSynthesisUtterance(text);
+      utt.lang   = lang === 'ar' ? 'ar-SA' : 'en-US';
+      utt.rate   = 0.92;
+      utt.pitch  = 1.0;
+      utt.volume = 1.0;
+
+      const applyVoice = () => {
+        const v = pickVoice(lang);
         if (v) utt.voice = v;
       };
-    }
 
-    function done() {
-      clearTimeout(safetyTimer);
-      clearInterval(iosKeepAlive);
-      isAISpeaking = false; setStatus('idle'); resolve();
-    }
-    utt.onend   = done;
-    utt.onerror = (e) => {
-      if (e.error === 'interrupted' || e.error === 'canceled') { done(); return; }
-      done();
-    };
-    speechSynthesis.speak(utt);
-    const safetyTimer  = setTimeout(done, 30000);
-    const iosKeepAlive = setInterval(() => {
-      if (!isAISpeaking) { clearInterval(iosKeepAlive); return; }
-      if (speechSynthesis.speaking && !speechSynthesis.paused) {
-        speechSynthesis.pause(); speechSynthesis.resume();
+      if (speechSynthesis.getVoices().length) {
+        applyVoice();
+      } else {
+        speechSynthesis.onvoiceschanged = () => {
+          speechSynthesis.onvoiceschanged = null;
+          applyVoice();
+        };
       }
-    }, 12000);
+
+      function done() {
+        clearTimeout(safetyTimer);
+        clearInterval(iosKeepAlive);
+        isAISpeaking = false; setStatus('idle'); resolve();
+      }
+      utt.onend   = done;
+      utt.onerror = (e) => {
+        if (e.error === 'interrupted' || e.error === 'canceled') { done(); return; }
+        console.error('TTS:', e.error); done();
+      };
+
+      speechSynthesis.speak(utt);
+      const safetyTimer  = setTimeout(done, 30000);
+      const iosKeepAlive = setInterval(() => {
+        if (!isAISpeaking) { clearInterval(iosKeepAlive); return; }
+        if (speechSynthesis.speaking && !speechSynthesis.paused) {
+          speechSynthesis.pause(); speechSynthesis.resume();
+        }
+      }, 12000);
+    }, 150); // wait for unlock utterance to finish
   });
 }
 
