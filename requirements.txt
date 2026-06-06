@@ -1,1 +1,1 @@
-edge-tts
+# No Python dependencies needed - using urllib (built-in)

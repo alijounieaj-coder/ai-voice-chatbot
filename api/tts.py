@@ -1,28 +1,18 @@
-# api/tts.py — Microsoft Edge TTS (edge-tts)
-# Completely free, no API key, no account needed
-# Arabic: ar-SA-HamedNeural (male) / ar-SA-ZariyahNeural (female)
-# English: en-US-ChristopherNeural (male) / en-US-JennyNeural (female)
+# api/tts.py — Hugging Face TTS (100% free, no credit card)
+# Arabic : facebook/mms-tts-ara  (Meta Massively Multilingual Speech)
+# English: facebook/mms-tts-eng
 
 from http.server import BaseHTTPRequestHandler
-import json
-import asyncio
-import edge_tts
+import json, os, urllib.request, urllib.error
 
-VOICE_EN = 'en-US-ChristopherNeural'
-VOICE_AR = 'ar-SA-HamedNeural'
-
-async def synthesize(text, voice):
-    communicate = edge_tts.Communicate(text, voice)
-    audio = b''
-    async for chunk in communicate.stream():
-        if chunk['type'] == 'audio':
-            audio += chunk['data']
-    return audio
+MODEL_AR = 'facebook/mms-tts-ara'
+MODEL_EN = 'facebook/mms-tts-eng'
+HF_BASE  = 'https://api-inference.huggingface.co/models/'
 
 class handler(BaseHTTPRequestHandler):
 
     def log_message(self, format, *args):
-        pass  # suppress access logs
+        pass
 
     def do_OPTIONS(self):
         self.send_response(204)
@@ -37,31 +27,46 @@ class handler(BaseHTTPRequestHandler):
             lang   = body.get('lang', 'en')
 
             if not text:
-                self.send_response(400)
-                self._cors()
-                self.send_header('Content-Type', 'application/json')
-                self.end_headers()
-                self.wfile.write(b'{"error":"Missing text"}')
+                self._json(400, {'error': 'Missing text'})
                 return
 
-            voice = VOICE_AR if lang == 'ar' else VOICE_EN
-            audio = asyncio.run(synthesize(text, voice))
+            api_key = os.environ.get('HUGGINGFACE_API_KEY', '')
+            model   = MODEL_AR if lang == 'ar' else MODEL_EN
+
+            req = urllib.request.Request(
+                HF_BASE + model,
+                data    = json.dumps({'inputs': text}).encode(),
+                method  = 'POST',
+                headers = {
+                    'Authorization': f'Bearer {api_key}',
+                    'Content-Type' : 'application/json'
+                }
+            )
+
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                audio        = resp.read()
+                content_type = resp.headers.get('Content-Type', 'audio/flac')
 
             self.send_response(200)
             self._cors()
-            self.send_header('Content-Type', 'audio/mpeg')
+            self.send_header('Content-Type', content_type)
             self.send_header('Cache-Control', 'no-cache')
             self.end_headers()
             self.wfile.write(audio)
 
+        except urllib.error.HTTPError as e:
+            self._json(502, {'error': f'HF error {e.code}: {e.read().decode()[:200]}'})
         except Exception as e:
-            self.send_response(500)
-            self._cors()
-            self.send_header('Content-Type', 'application/json')
-            self.end_headers()
-            self.wfile.write(json.dumps({'error': str(e)}).encode())
+            self._json(500, {'error': str(e)})
 
     def _cors(self):
         self.send_header('Access-Control-Allow-Origin',  '*')
         self.send_header('Access-Control-Allow-Methods', 'POST, OPTIONS')
         self.send_header('Access-Control-Allow-Headers', 'Content-Type')
+
+    def _json(self, code, obj):
+        self.send_response(code)
+        self._cors()
+        self.send_header('Content-Type', 'application/json')
+        self.end_headers()
+        self.wfile.write(json.dumps(obj).encode())
