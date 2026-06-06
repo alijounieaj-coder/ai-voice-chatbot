@@ -783,9 +783,8 @@ function startVAD() {
 
 /* ── Interrupt ─────────────────────────────────────────────── */
 function interruptAI() {
-  if (ttsController)  { ttsController.abort();  ttsController = null; }
-  if (chatController) { chatController.abort();  chatController = null; }
-  if (currentAudio)   { currentAudio.pause(); currentAudio.src = ''; currentAudio = null; }
+  if (window.speechSynthesis) speechSynthesis.cancel();
+  if (chatController) { chatController.abort(); chatController = null; }
   isAISpeaking = false;
   setStatus('idle');
 }
@@ -947,48 +946,53 @@ async function handleUserInput(text) {
   }
 }
 
-/* ── TTS Playback — Hugging Face (free, no credit card) ──────── */
-let currentAudio  = null;
-let ttsController = null;
+/* ── TTS Playback — Browser Web Speech API (free, unlimited) ── */
+function playTTS(text, lang) {
+  return new Promise((resolve) => {
+    if (!window.speechSynthesis) { isAISpeaking = false; setStatus('idle'); resolve(); return; }
+    speechSynthesis.cancel();
+    ttsPhase = 0;
 
-async function playTTS(text, lang) {
-  ttsController = new AbortController();
-  try {
-    const res = await fetch('/api/tts', {
-      method:  'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({ text, lang }),
-      signal:  ttsController.signal
-    });
+    const utt  = new SpeechSynthesisUtterance(text);
+    utt.lang   = lang === 'ar' ? 'ar-SA' : 'en-US';
+    utt.rate   = 0.92;
+    utt.pitch  = 1.0;
+    utt.volume = 1.0;
 
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      throw new Error(err.error || `TTS ${res.status}`);
+    function pickVoice(list) {
+      const t = lang === 'ar' ? 'ar' : 'en';
+      return list.find(v => v.lang.startsWith(t) && v.localService)
+          || list.find(v => v.lang.startsWith(t)) || null;
+    }
+    const voices = speechSynthesis.getVoices();
+    if (voices.length) { const v = pickVoice(voices); if (v) utt.voice = v; }
+    else {
+      speechSynthesis.onvoiceschanged = () => {
+        speechSynthesis.onvoiceschanged = null;
+        const v = pickVoice(speechSynthesis.getVoices());
+        if (v) utt.voice = v;
+      };
     }
 
-    const blob = await res.blob();
-    const url  = URL.createObjectURL(blob);
-
-    await new Promise((resolve) => {
-      currentAudio = new Audio(url);
-      const cleanup = () => {
-        URL.revokeObjectURL(url);
-        currentAudio = null;
-        isAISpeaking = false; setStatus('idle'); resolve();
-      };
-      currentAudio.onended = cleanup;
-      currentAudio.onerror = cleanup;
-      currentAudio.play().catch(cleanup);
-    });
-
-  } catch (err) {
-    if (err.name === 'AbortError') return;
-    console.error('[TTS]', err.message);
-    showError('Voice error: ' + err.message.slice(0, 100));
-    isAISpeaking = false; setStatus('idle');
-  } finally {
-    ttsController = null;
-  }
+    function done() {
+      clearTimeout(safetyTimer);
+      clearInterval(iosKeepAlive);
+      isAISpeaking = false; setStatus('idle'); resolve();
+    }
+    utt.onend   = done;
+    utt.onerror = (e) => {
+      if (e.error === 'interrupted' || e.error === 'canceled') { done(); return; }
+      done();
+    };
+    speechSynthesis.speak(utt);
+    const safetyTimer  = setTimeout(done, 30000);
+    const iosKeepAlive = setInterval(() => {
+      if (!isAISpeaking) { clearInterval(iosKeepAlive); return; }
+      if (speechSynthesis.speaking && !speechSynthesis.paused) {
+        speechSynthesis.pause(); speechSynthesis.resume();
+      }
+    }, 12000);
+  });
 }
 
 /* ── Mic button ─────────────────────────────────────────────── */
