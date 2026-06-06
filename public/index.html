@@ -363,7 +363,7 @@
 
 <script>
 // ══════════════════════════════════════════════════════════════
-//  AI Voice Chatbot — v2  (Gemini + ElevenLabs + Avatar)
+//  AI Voice Chatbot — v3  (Groq Llama 3.3 70B + Fish Audio)
 // ══════════════════════════════════════════════════════════════
 
 /* ── State ─────────────────────────────────────────────────── */
@@ -371,9 +371,7 @@ let recognition        = null;
 let audioCtx           = null;
 let analyser           = null;
 let micStream          = null;
-let currentAudio       = null;
 let chatController     = null;
-let ttsController      = null;
 let isAISpeaking       = false;
 let isListening        = false;
 let history            = [];
@@ -636,15 +634,8 @@ function startVAD() {
 
 /* ── Interrupt ─────────────────────────────────────────────── */
 function interruptAI() {
-  // Cancel browser TTS
   if (window.speechSynthesis) speechSynthesis.cancel();
-  if (currentAudio) {
-    currentAudio.pause();
-    currentAudio.src = '';
-    currentAudio = null;
-  }
-  if (ttsController)  { ttsController.abort();  ttsController  = null; }
-  if (chatController) { chatController.abort();  chatController = null; }
+  if (chatController) { chatController.abort(); chatController = null; }
   isAISpeaking = false;
   setStatus('idle');
 }
@@ -797,7 +788,7 @@ async function handleUserInput(text) {
   }
 }
 
-/* ── TTS Playback — Browser Web Speech API ──────────────────── */
+/* ── TTS Playback — Browser Web Speech API (free, unlimited) ── */
 function playTTS(text, lang) {
   return new Promise((resolve) => {
     if (!window.speechSynthesis) {
@@ -808,8 +799,8 @@ function playTTS(text, lang) {
       return;
     }
 
-    speechSynthesis.cancel(); // clear any queued speech
-    ttsPhase = 0;             // reset mouth animation phase
+    speechSynthesis.cancel();
+    ttsPhase = 0;
 
     const utt  = new SpeechSynthesisUtterance(text);
     utt.lang   = lang === 'ar' ? 'ar-SA' : 'en-US';
@@ -817,13 +808,24 @@ function playTTS(text, lang) {
     utt.pitch  = 1.0;
     utt.volume = 1.0;
 
-    // Pick the best matching voice for the language
+    function pickVoice(voiceList) {
+      const target = lang === 'ar' ? 'ar' : 'en';
+      return voiceList.find(v => v.lang.startsWith(target) && v.localService)
+          || voiceList.find(v => v.lang.startsWith(target))
+          || null;
+    }
+
     const voices = speechSynthesis.getVoices();
     if (voices.length) {
-      const target  = lang === 'ar' ? 'ar' : 'en';
-      const local   = voices.find(v => v.lang.startsWith(target) && v.localService);
-      const remote  = voices.find(v => v.lang.startsWith(target));
-      if (local || remote) utt.voice = local || remote;
+      const v = pickVoice(voices);
+      if (v) utt.voice = v;
+    } else {
+      // iOS/Safari loads voices async — wait for them once
+      speechSynthesis.onvoiceschanged = () => {
+        speechSynthesis.onvoiceschanged = null;
+        const v = pickVoice(speechSynthesis.getVoices());
+        if (v) utt.voice = v;
+      };
     }
 
     utt.onend = () => {
@@ -839,18 +841,6 @@ function playTTS(text, lang) {
       setStatus('idle');
       resolve();
     };
-
-    // iOS Safari fix: voices may load async — retry once if list was empty
-    if (!voices.length) {
-      speechSynthesis.onvoiceschanged = () => {
-        speechSynthesis.onvoiceschanged = null;
-        const v2 = speechSynthesis.getVoices();
-        const t  = lang === 'ar' ? 'ar' : 'en';
-        const picked = v2.find(v => v.lang.startsWith(t) && v.localService)
-                    || v2.find(v => v.lang.startsWith(t));
-        if (picked) utt.voice = picked;
-      };
-    }
 
     speechSynthesis.speak(utt);
   });
