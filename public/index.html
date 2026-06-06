@@ -951,15 +951,25 @@ function pickVoice(lang) {
   const voices = speechSynthesis.getVoices();
   const t      = lang === 'ar' ? 'ar' : 'en';
   const all    = voices.filter(v => v.lang.startsWith(t));
+  if (!all.length) return null;
 
-  // Prefer known male voice names
-  const maleKeywords = ['male','Male','david','David','mark','Mark',
-    'daniel','Daniel','alex','Alex','thomas','Thomas','aaron','Aaron',
-    'guy','Guy','christopher','Christopher','ryan','Ryan','james','James',
-    'maged','Maged','hamed','Hamed','naayf','Naayf'];
+  // Known female voice names to avoid
+  const femaleNames = ['samantha','karen','victoria','moira','fiona','tessa',
+    'veena','zariyah','zira','susan','lisa','kate','alice','allison',
+    'ava','emily','joanna','salli','kimberly','kendra','ivy','female'];
 
-  const male = all.find(v => maleKeywords.some(k => v.name.includes(k)));
-  return male || all.find(v => v.localService) || all[0] || null;
+  // Known male voice names to prefer
+  const maleNames = ['maged','naayf','zariyah','hamed','david','mark',
+    'daniel','alex','thomas','aaron','guy','christopher','ryan','james',
+    'male','fred','tom','martin','lee','rishi','mohan'];
+
+  const isFemale = v => femaleNames.some(n => v.name.toLowerCase().includes(n));
+  const isMale   = v => maleNames.some(n => v.name.toLowerCase().includes(n));
+
+  return all.find(v => isMale(v))
+      || all.find(v => !isFemale(v) && v.localService)
+      || all.find(v => !isFemale(v))
+      || all[0];
 }
 
 function playTTS(text, lang) {
@@ -979,7 +989,15 @@ function playTTS(text, lang) {
 
       const applyVoice = () => {
         const v = pickVoice(lang);
-        if (v) utt.voice = v;
+        if (v) {
+          utt.voice = v;
+        } else if (lang === 'ar') {
+          // No Arabic voice installed — try English fallback
+          const en = pickVoice('en');
+          if (en) utt.voice = en;
+          utt.lang = 'en-US';
+          showError('Arabic voice not installed on this device — install Arabic language pack');
+        }
       };
 
       if (speechSynthesis.getVoices().length) {
