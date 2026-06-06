@@ -541,54 +541,45 @@ function drawAvatarFrame(amplitude) {
   const iW = avatarImg.naturalWidth;
   const iH = avatarImg.naturalHeight;
 
-  // Use detected mouth landmarks or fall back to 60% heuristic
-  const splitY  = faceMouth ? faceMouth.centerY  : 0.60;
-  const mouthW  = faceMouth ? (faceMouth.rightX - faceMouth.leftX) : 0.30;
-  const mouthLX = faceMouth ? faceMouth.leftX    : 0.35;
-  const openMax = faceMouth ? (faceMouth.bottomY - faceMouth.topY) * 0.9 : 0.06;
+  // Always draw the full photo — never cut or split it
+  avatarCtx.drawImage(avatarImg, 0, 0, iW, iH, 0, 0, AVATAR_W, AVATAR_H);
 
-  if (!isAISpeaking || amplitude < 0.02) {
-    avatarCtx.drawImage(avatarImg, 0, 0, iW, iH, 0, 0, AVATAR_W, AVATAR_H);
-  } else {
-    const gap = Math.min(amplitude, 1) * openMax; // normalized gap to open
+  // When speaking: overlay an animated mouth shape ON TOP of the photo
+  if (isAISpeaking && amplitude > 0.03) {
+    const cy    = AVATAR_H * (faceMouth ? faceMouth.centerY              : 0.63);
+    const rx    = AVATAR_W * (faceMouth ? (faceMouth.rightX - faceMouth.leftX) * 0.38 : 0.10);
+    const cx    = AVATAR_W * (faceMouth ? (faceMouth.leftX + faceMouth.rightX) / 2   : 0.50);
+    const openH = AVATAR_H * (faceMouth ? (faceMouth.bottomY - faceMouth.topY) * 1.1  : 0.045);
+    const ry    = Math.max(1, openH * Math.min(amplitude, 1));
 
-    // 1. Top — above mouth centre, unchanged
-    avatarCtx.drawImage(
-      avatarImg, 0, 0, iW, iH * splitY,
-      0, 0, AVATAR_W, AVATAR_H * splitY
-    );
-
-    // 2. Bottom — below mouth centre, shifted down by gap
-    const botSrcY  = iH  * splitY;
-    const botDestY = AVATAR_H * splitY + gap * AVATAR_H;
-    avatarCtx.drawImage(
-      avatarImg, 0, botSrcY, iW, iH - botSrcY,
-      0, botDestY, AVATAR_W, AVATAR_H - botDestY
-    );
-
-    // 3. Dark gap between lips — mouth opening
-    avatarCtx.fillStyle = '#100808';
+    // Dark mouth interior
+    avatarCtx.fillStyle = 'rgba(15, 4, 4, 0.92)';
     avatarCtx.beginPath();
-    avatarCtx.ellipse(
-      AVATAR_W * (mouthLX + mouthW / 2),  // cx
-      AVATAR_H * splitY + (gap * AVATAR_H) / 2,  // cy
-      AVATAR_W * mouthW / 2,  // rx
-      (gap * AVATAR_H) / 2,   // ry
-      0, 0, Math.PI * 2
-    );
+    avatarCtx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
     avatarCtx.fill();
+
+    // Soft lip edge highlight
+    avatarCtx.strokeStyle = 'rgba(180, 100, 90, 0.35)';
+    avatarCtx.lineWidth   = 1.5;
+    avatarCtx.stroke();
   }
 
   avatarCtx.restore();
 }
 
 // Animation loop
-const ampArr = new Uint8Array(128);
+const ampArr  = new Uint8Array(128);
 let ttsPhase  = 0;
 function avatarLoop() {
   let amp = 0;
-  if (isAISpeaking) {
-    // Simulate mouth movement with natural-feeling sine waves
+  if (isAISpeaking && ttsAnalyser) {
+    // Real amplitude from ElevenLabs audio
+    ttsAnalyser.getByteFrequencyData(ampArr);
+    let sum = 0;
+    for (let i = 1; i < 20; i++) sum += ampArr[i];
+    amp = Math.min(1, (sum / (19 * 255)) * 4);
+  } else if (isAISpeaking) {
+    // Simulated fallback when no analyser
     ttsPhase += 0.07;
     amp = 0.35 + 0.35 * Math.sin(ttsPhase) + 0.12 * Math.sin(ttsPhase * 2.5 + 1);
     amp = Math.max(0.02, Math.min(1, amp));
@@ -755,8 +746,11 @@ function startVAD() {
 
 /* ── Interrupt ─────────────────────────────────────────────── */
 function interruptAI() {
-  if (window.speechSynthesis) speechSynthesis.cancel();
+  if (ttsController)  { ttsController.abort(); ttsController = null; }
   if (chatController) { chatController.abort(); chatController = null; }
+  if (currentAudio)   { currentAudio.pause(); currentAudio.src = ''; currentAudio = null; }
+  if (window.speechSynthesis) speechSynthesis.cancel();
+  ttsAnalyser  = null;
   isAISpeaking = false;
   setStatus('idle');
 }
@@ -917,56 +911,79 @@ async function handleUserInput(text) {
   }
 }
 
-/* ── TTS Playback — Browser Web Speech API (free, unlimited) ── */
-function playTTS(text, lang) {
-  return new Promise((resolve) => {
-    if (!window.speechSynthesis) {
-      isAISpeaking = false; setStatus('idle'); resolve(); return;
-    }
-    speechSynthesis.cancel();
+/* ── TTS Playback — ElevenLabs (your cloned voice, free tier) ── */
+let currentAudio = null;
+let ttsController = null;
+let ttsAnalyser   = null;
 
-    const utt  = new SpeechSynthesisUtterance(text);
-    utt.lang   = lang === 'ar' ? 'ar-SA' : 'en-US';
-    utt.rate   = 0.92;
-    utt.pitch  = 1.0;
-    utt.volume = 1.0;
+async function playTTS(text, lang) {
+  ttsController = new AbortController();
+  ttsAnalyser   = null;
 
-    function pickVoice(list) {
-      const t = lang === 'ar' ? 'ar' : 'en';
-      return list.find(v => v.lang.startsWith(t) && v.localService)
-          || list.find(v => v.lang.startsWith(t)) || null;
+  try {
+    const res = await fetch('/api/tts', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ text, lang }),
+      signal:  ttsController.signal
+    });
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(`TTS ${res.status}: ${err.detail || err.error || ''}`);
     }
-    const voices = speechSynthesis.getVoices();
-    if (voices.length) { const v = pickVoice(voices); if (v) utt.voice = v; }
-    else {
-      speechSynthesis.onvoiceschanged = () => {
-        speechSynthesis.onvoiceschanged = null;
-        const v = pickVoice(speechSynthesis.getVoices());
-        if (v) utt.voice = v;
+
+    const blob = await res.blob();
+    const url  = URL.createObjectURL(blob);
+
+    await new Promise((resolve) => {
+      currentAudio = new Audio(url);
+
+      // Connect to Web Audio API for real amplitude → drives lip sync
+      try {
+        if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        if (audioCtx.state === 'suspended') audioCtx.resume();
+        const src   = audioCtx.createMediaElementSource(currentAudio);
+        ttsAnalyser = audioCtx.createAnalyser();
+        ttsAnalyser.fftSize = 256;
+        src.connect(ttsAnalyser);
+        src.connect(audioCtx.destination);
+      } catch (_) { /* fallback: play without analyser */ }
+
+      const cleanup = () => {
+        URL.revokeObjectURL(url);
+        currentAudio = null; ttsAnalyser = null;
+        isAISpeaking = false; setStatus('idle');
+        resolve();
       };
-    }
+      currentAudio.onended = cleanup;
+      currentAudio.onerror = cleanup;
+      currentAudio.play().catch(cleanup);
+    });
 
-    function done() {
-      clearTimeout(safetyTimer);
-      clearInterval(iosKeepAlive);
-      isAISpeaking = false; setStatus('idle'); resolve();
-    }
-    utt.onend   = done;
-    utt.onerror = (e) => {
-      if (e.error === 'interrupted' || e.error === 'canceled') { done(); return; }
-      console.error('TTS:', e.error); done();
-    };
+  } catch (err) {
+    if (err.name === 'AbortError') return;
+    console.error('[TTS]', err.message);
+    // Graceful fallback to browser TTS
+    await playTTSFallback(text, lang);
+  } finally {
+    ttsController = null; ttsAnalyser = null;
+  }
+}
 
+/* ── Fallback: browser TTS if ElevenLabs key not set ────────── */
+function playTTSFallback(text, lang) {
+  return new Promise((resolve) => {
+    if (!window.speechSynthesis) { isAISpeaking = false; setStatus('idle'); resolve(); return; }
+    speechSynthesis.cancel();
+    const utt = new SpeechSynthesisUtterance(text);
+    utt.lang  = lang === 'ar' ? 'ar-SA' : 'en-US';
+    utt.rate  = 0.92;
+    const done = () => { isAISpeaking = false; setStatus('idle'); resolve(); };
+    utt.onend = done;
+    utt.onerror = (e) => { if (e.error !== 'interrupted') console.error('TTS fallback:', e.error); done(); };
     speechSynthesis.speak(utt);
-    // iOS: onend sometimes never fires
-    const safetyTimer  = setTimeout(done, 30000);
-    // iOS: cuts off after ~15s
-    const iosKeepAlive = setInterval(() => {
-      if (!isAISpeaking) { clearInterval(iosKeepAlive); return; }
-      if (speechSynthesis.speaking && !speechSynthesis.paused) {
-        speechSynthesis.pause(); speechSynthesis.resume();
-      }
-    }, 12000);
+    setTimeout(done, 30000); // safety
   });
 }
 
